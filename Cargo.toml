@@ -1,0 +1,19 @@
+[package]
+name = "snake"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "snake"
+path = "src/main.rs"
+
+[lib]
+name = "snake"
+crate-type = ["cdylib", "rlib"]
+
+
+[dependencies]
+bevy = "0.18.0"
+rand = "0.10.2"
+serde = {version = "1.0.229", features=["derive"]}
+
