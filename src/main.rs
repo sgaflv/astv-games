@@ -1,5 +1,3 @@
-use snake::run;
-
 fn main() {
-    run();
+    snake::main();
 }

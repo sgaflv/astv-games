@@ -30,8 +30,17 @@ clean:
 # Android
 # --------------------
 
+# Build signed debug apk (cargo ndk + aapt2/zipalign/apksigner)
 apk:
-    cargo apk build --release
+    ./scripts/build-apk.sh
+
+# Build signed release apk
+apk-release:
+    PROFILE=release ./scripts/build-apk.sh
+
+# Build apk for arm64-v8a
+apk-arm64:
+    ANDROID_ABI=arm64-v8a ./scripts/build-apk.sh
 
 # Build only native library
 ndk:
@@ -41,11 +50,14 @@ ndk:
 # Install
 # --------------------
 
+connect:
+    adb connect 192.168.188.54
+
 install:
-    adb install -r target/release/apk/*.apk
+    adb install -r -d target/apk/snake.apk
 
 run-tv:
-    adb shell monkey -p com.example.game 1
+    adb shell monkey -p rust.snake 1
 
 log:
     adb logcat

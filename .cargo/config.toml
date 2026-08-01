@@ -1,0 +1,7 @@
+
+[target.armv7-linux-androideabi]
+
+rustflags = [
+    "-C",
+    "link-arg=--target=armv7a-linux-androideabi26"
+]
