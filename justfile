@@ -75,4 +75,4 @@ log:
 deploy:
     just apk
     just install
-    just run-tv
+    just tv-run
