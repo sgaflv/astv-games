@@ -23,14 +23,5 @@ opt-level = 3
 
 [dependencies]
 bevy = { version = "0.19", features = ["android-native-activity"] }
-# bevy = { version = "0.19", default-features = false, features = [
-#         "android-native-activity",
-#         "bevy_render",
-#         "bevy_sprite",
-#         "bevy_core_pipeline",
-#         "bevy_winit",
-#         "png",
-#     ]}
 rand = "0.10.2"
 serde = {version = "1.0.229", features=["derive"]}
-#android-activity = { version = "0.6.1", features = ["native-activity"] }

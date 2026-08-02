@@ -56,9 +56,15 @@ connect:
 install:
     adb install -r -d target/apk/snake.apk
 
-run-tv:
+tv-run:
     adb shell monkey -p rust.snake 1
 
+tv-stop:
+    adb shell am force-stop rust.snake
+
+tv-cancel:
+    adb shell input keyevent KEYCODE_HOME
+    
 log:
     adb logcat
 

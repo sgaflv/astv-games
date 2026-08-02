@@ -1,11 +1,33 @@
+use bevy::camera::visibility::RenderLayers;
+use bevy::camera::{
+    Camera, ClearColorConfig, OrthographicProjection, Projection, RenderTarget, ScalingMode,
+};
 use bevy::diagnostic::{DiagnosticsStore, FrameTimeDiagnosticsPlugin};
-use bevy::{prelude::*, window::WindowResolution};
+use bevy::image::{Image, ImageSampler};
+use bevy::render::render_resource::TextureFormat;
+use bevy::window::{PrimaryWindow, WindowResolution};
+use bevy::{prelude::*, window::Window};
 
 use rand::RngExt;
 
 const GRID_SIZE: i32 = 20;
 const CELL_SIZE: f32 = 25.0;
 
+// The game is rendered into an offscreen texture at this resolution and then
+// upscaled to the (potentially 4K) window. Lower resolution = bigger upscaled
+// pixels and less GPU fill, which is what keeps frame rate high on weak TV
+// GPUs. 1280x720 measured ~26 fps on the TV; 640x360 is ~4x less fill.
+const RENDER_WIDTH: u32 = 640;
+const RENDER_HEIGHT: u32 = 360;
+
+// Local desktop window size (independent of the render target above).
+const WINDOW_WIDTH: u32 = 800;
+const WINDOW_HEIGHT: u32 = 600;
+
+// Fixed world-unit height shown by the game camera. This keeps the board
+// framing identical regardless of RENDER_WIDTH/HEIGHT (so lowering the render
+// resolution only makes pixels bigger, it never crops the board).
+const GAME_VIEW_HEIGHT: f32 = 540.0;
 #[derive(Component, Clone, Copy, PartialEq)]
 struct SnakeSegment {
     current: IVec2,  // current logical cell
@@ -14,6 +36,9 @@ struct SnakeSegment {
 
 #[derive(Component)]
 struct Food;
+
+#[derive(Component)]
+struct BlitSprite;
 
 #[derive(Component, Clone, Copy, PartialEq)]
 struct FoodPosition {
@@ -52,7 +77,7 @@ pub fn main() {
         .add_plugins(DefaultPlugins.set(WindowPlugin {
             primary_window: Some(Window {
                 title: "Snake".into(),
-                resolution: WindowResolution::new(800, 600),
+                resolution: WindowResolution::new(WINDOW_WIDTH, WINDOW_HEIGHT),
                 ..default()
             }),
             ..default()
@@ -68,17 +93,21 @@ pub fn main() {
             TimerMode::Repeating,
         )))
         .add_systems(Startup, setup)
-        .add_systems(Update, (keyboard_input, move_snake))
-        .add_systems(Update, fps_system)
         .add_systems(
             Update,
-            (keyboard_input, move_snake, interpolate_snake, fps_system),
+            (
+                keyboard_input,
+                move_snake,
+                interpolate_snake,
+                fps_system,
+                update_blit_sprite,
+            ),
         )
         .run();
 }
 
 fn interpolate_snake(
-    time: Res<Time>,
+    //time: Res<Time>,
     timer: Res<MoveTimer>,
     mut query: Query<(&SnakeSegment, &mut Transform)>,
 ) {
@@ -100,9 +129,67 @@ fn setup(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<ColorMaterial>>,
+    mut images: ResMut<Assets<Image>>,
     mut snake: ResMut<Snake>,
+    windows: Query<&Window, With<PrimaryWindow>>,
 ) {
-    commands.spawn(Camera2d);
+    // Offscreen low-resolution render target. Nearest sampling makes the
+    // upscaled pixels crisp instead of blurry.
+    let mut target = Image::new_target_texture(
+        RENDER_WIDTH,
+        RENDER_HEIGHT,
+        TextureFormat::Rgba8UnormSrgb,
+        None,
+    );
+    target.sampler = ImageSampler::nearest();
+    let target_handle = images.add(target);
+
+    // Camera 1 (order 0): renders the game scene into the low-res texture.
+    // The projection shows a fixed world-unit area so the board always fits.
+    commands.spawn((
+        Camera2d,
+        Projection::Orthographic(OrthographicProjection {
+            scaling_mode: ScalingMode::FixedVertical {
+                viewport_height: GAME_VIEW_HEIGHT,
+            },
+            ..OrthographicProjection::default_2d()
+        }),
+        Camera {
+            order: 0,
+            clear_color: ClearColorConfig::Custom(Color::srgb(0.05, 0.05, 0.07)),
+            ..default()
+        },
+        RenderTarget::Image(target_handle.clone().into()),
+        RenderLayers::layer(0),
+    ));
+
+    // Camera 2 (order 1): renders to the window, only the fullscreen blit sprite.
+    commands.spawn((
+        Camera2d,
+        Camera {
+            order: 1,
+            ..default()
+        },
+        RenderLayers::layer(1),
+    ));
+
+    // Fullscreen sprite showing the upscaled low-res texture.
+    let window_size = windows
+        .single()
+        .map(|window| window.resolution.size())
+        .unwrap_or(Vec2::new(RENDER_WIDTH as f32, RENDER_HEIGHT as f32));
+
+    commands.spawn((
+        Sprite {
+            image: target_handle,
+            custom_size: Some(window_size),
+            ..default()
+        },
+        Transform::default(),
+        RenderLayers::layer(1),
+        BlitSprite,
+    ));
+
     spawn_border(&mut commands);
 
     let mut body = Vec::new();
@@ -140,7 +227,19 @@ fn setup(
     spawn_food(&mut commands, &mut meshes, &mut materials);
 }
 
-fn fps_system(diagnostics: Res<DiagnosticsStore>, mut query: Query<&mut Text, With<FpsText>>) {
+fn fps_system(
+    diagnostics: Res<DiagnosticsStore>,
+    mut query: Query<&mut Text, With<FpsText>>,
+    mut frame_counter: Local<u32>,
+) {
+    // Only rewrite + re-layout the text every 30th frame; per-frame text
+    // re-layout is surprisingly expensive on weak TV CPUs.
+    *frame_counter = (*frame_counter + 1) % 30;
+
+    if *frame_counter != 0 {
+        return;
+    }
+
     if let Some(fps) = diagnostics
         .get(&FrameTimeDiagnosticsPlugin::FPS)
         .and_then(|fps| fps.smoothed())
@@ -148,6 +247,21 @@ fn fps_system(diagnostics: Res<DiagnosticsStore>, mut query: Query<&mut Text, Wi
         for mut text in &mut query {
             text.0 = format!("FPS: {:.0}", fps);
         }
+    }
+}
+
+fn update_blit_sprite(
+    mut query: Query<&mut Sprite, With<BlitSprite>>,
+    windows: Query<&Window, With<PrimaryWindow>>,
+) {
+    let Ok(window) = windows.single() else {
+        return;
+    };
+
+    let size = window.resolution.size();
+
+    for mut sprite in &mut query {
+        sprite.custom_size = Some(size);
     }
 }
 
