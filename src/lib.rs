@@ -10,6 +10,8 @@ use bevy::{prelude::*, window::Window};
 
 use rand::RngExt;
 
+use std::collections::VecDeque;
+
 const GRID_SIZE: i32 = 20;
 const CELL_SIZE: f32 = 25.0;
 
@@ -17,8 +19,13 @@ const CELL_SIZE: f32 = 25.0;
 // upscaled to the (potentially 4K) window. Lower resolution = bigger upscaled
 // pixels and less GPU fill, which is what keeps frame rate high on weak TV
 // GPUs. 1280x720 measured ~26 fps on the TV; 640x360 is ~4x less fill.
-const RENDER_WIDTH: u32 = 640;
-const RENDER_HEIGHT: u32 = 360;
+//
+// 764x432 divides the target TV resolution 3820x2160 exactly (x5 both axes), so
+// the integer-scaled blit fills the whole screen with every render pixel mapped
+// 1:5 onto physical pixels. 764x432 is ~1.4x the fill of 640x360; 955x540
+// (x4) fills the same screen with sharper geometry at ~2.2x the fill.
+const RENDER_WIDTH: u32 = 764;
+const RENDER_HEIGHT: u32 = 432;
 
 // Local desktop window size (independent of the render target above).
 const WINDOW_WIDTH: u32 = 800;
@@ -27,7 +34,10 @@ const WINDOW_HEIGHT: u32 = 600;
 // Fixed world-unit height shown by the game camera. This keeps the board
 // framing identical regardless of RENDER_WIDTH/HEIGHT (so lowering the render
 // resolution only makes pixels bigger, it never crops the board).
-const GAME_VIEW_HEIGHT: f32 = 540.0;
+// 600 is chosen so each cell is an exact whole number of render texels
+// (CELL_SIZE * RENDER_HEIGHT / VIEW_HEIGHT = 25 * 432 / 600 = 18), keeping the
+// grid perfectly uniform after upscaling instead of cells 16/17 texels wide.
+const GAME_VIEW_HEIGHT: f32 = 600.0;
 #[derive(Component, Clone, Copy, PartialEq)]
 struct SnakeSegment {
     current: IVec2,  // current logical cell
@@ -53,7 +63,10 @@ struct FpsText;
 struct Snake {
     body: Vec<Entity>,
     direction: Direction,
-    next_direction: Direction,
+    // Pending direction changes entered between ticks, applied one per tick.
+    // A single slot drops the first press of a quick U-turn; the queue keeps
+    // both so Up+Left entered before a tick both register.
+    input_queue: VecDeque<Direction>,
 }
 
 const BORDER_SIZE: f32 = GRID_SIZE as f32 * CELL_SIZE;
@@ -63,12 +76,23 @@ const MOVE_INTERVAL: f32 = 0.5;
 #[derive(Resource)]
 struct MoveTimer(Timer);
 
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 enum Direction {
     Up,
     Down,
     Left,
     Right,
+}
+
+impl Direction {
+    fn opposite(self) -> Self {
+        match self {
+            Direction::Up => Direction::Down,
+            Direction::Down => Direction::Up,
+            Direction::Left => Direction::Right,
+            Direction::Right => Direction::Left,
+        }
+    }
 }
 
 #[bevy_main]
@@ -86,7 +110,7 @@ pub fn main() {
         .insert_resource(Snake {
             body: Vec::new(),
             direction: Direction::Right,
-            next_direction: Direction::Right,
+            input_queue: VecDeque::new(),
         })
         .insert_resource(MoveTimer(Timer::from_seconds(
             MOVE_INTERVAL,
@@ -163,26 +187,32 @@ fn setup(
         RenderLayers::layer(0),
     ));
 
-    // Camera 2 (order 1): renders to the window, only the fullscreen blit sprite.
+    // Camera 2 (order 1): renders to the window, only the blit sprite. Cleared
+    // with the same color as the game so letterbox bars blend into the frame.
     commands.spawn((
         Camera2d,
         Camera {
             order: 1,
+            clear_color: ClearColorConfig::Custom(Color::srgb(0.05, 0.05, 0.07)),
             ..default()
         },
         RenderLayers::layer(1),
     ));
 
-    // Fullscreen sprite showing the upscaled low-res texture.
+    // Fullscreen sprite showing the upscaled low-res texture at an integer
+    // scale (see integer_blit_scale / update_blit_sprite).
     let window_size = windows
         .single()
         .map(|window| window.resolution.size())
         .unwrap_or(Vec2::new(RENDER_WIDTH as f32, RENDER_HEIGHT as f32));
 
+    let initial_size =
+        Vec2::splat(integer_blit_scale(window_size)) * Vec2::new(RENDER_WIDTH as f32, RENDER_HEIGHT as f32);
+
     commands.spawn((
         Sprite {
             image: target_handle,
-            custom_size: Some(window_size),
+            custom_size: Some(initial_size),
             ..default()
         },
         Transform::default(),
@@ -191,6 +221,7 @@ fn setup(
     ));
 
     spawn_border(&mut commands);
+    spawn_grid(&mut commands);
 
     let mut body = Vec::new();
 
@@ -250,8 +281,21 @@ fn fps_system(
     }
 }
 
+// Largest integer scale factor that fits the window. The blit sprite must be
+// shown at an exact integer scale with nearest sampling, otherwise a render
+// pixel can straddle two physical pixels and you get aliased "half" pixels.
+// On a 3820x2160 TV the 764x432 frame is shown at scale 5 -> 3820x2160 exactly,
+// filling the whole screen. Both scaled dimensions are even, so a centered
+// sprite's edges land exactly on physical pixel boundaries.
+fn integer_blit_scale(size: Vec2) -> f32 {
+    (size.x / RENDER_WIDTH as f32)
+        .floor()
+        .min((size.y / RENDER_HEIGHT as f32).floor())
+        .max(1.0)
+}
+
 fn update_blit_sprite(
-    mut query: Query<&mut Sprite, With<BlitSprite>>,
+    mut query: Query<(&mut Sprite, &mut Transform), With<BlitSprite>>,
     windows: Query<&Window, With<PrimaryWindow>>,
 ) {
     let Ok(window) = windows.single() else {
@@ -259,27 +303,44 @@ fn update_blit_sprite(
     };
 
     let size = window.resolution.size();
+    let scale = integer_blit_scale(size);
 
-    for mut sprite in &mut query {
-        sprite.custom_size = Some(size);
+    // Scaled dims are even (764x432 * integer scale), so a centered sprite
+    // maps each render texel onto exactly `scale` physical pixels with no
+    // half-pixel seams.
+    let scaled = Vec2::new(RENDER_WIDTH as f32 * scale, RENDER_HEIGHT as f32 * scale);
+
+    for (mut sprite, mut transform) in &mut query {
+        sprite.custom_size = Some(scaled);
+        transform.translation = Vec3::new(0.0, 0.0, 0.0);
     }
 }
 
 fn keyboard_input(keys: Res<ButtonInput<KeyCode>>, mut snake: ResMut<Snake>) {
-    if keys.just_pressed(KeyCode::ArrowUp) && snake.direction != Direction::Down {
-        snake.next_direction = Direction::Up;
+    let dir = if keys.just_pressed(KeyCode::ArrowUp) {
+        Direction::Up
+    } else if keys.just_pressed(KeyCode::ArrowDown) {
+        Direction::Down
+    } else if keys.just_pressed(KeyCode::ArrowLeft) {
+        Direction::Left
+    } else if keys.just_pressed(KeyCode::ArrowRight) {
+        Direction::Right
+    } else {
+        return;
+    };
+
+    // Validate against the most recent direction the snake will move in (last
+    // buffered turn, or the current one if nothing is buffered). Ignore exact
+    // repeats and 180-degree reversals so a queued Up can't be immediately
+    // cancelled by a Down.
+    let last = snake.input_queue.back().copied().unwrap_or(snake.direction);
+
+    if dir == last || dir == last.opposite() {
+        return;
     }
 
-    if keys.just_pressed(KeyCode::ArrowDown) && snake.direction != Direction::Up {
-        snake.next_direction = Direction::Down;
-    }
-
-    if keys.just_pressed(KeyCode::ArrowLeft) && snake.direction != Direction::Right {
-        snake.next_direction = Direction::Left;
-    }
-
-    if keys.just_pressed(KeyCode::ArrowRight) && snake.direction != Direction::Left {
-        snake.next_direction = Direction::Right;
+    if snake.input_queue.len() < 3 {
+        snake.input_queue.push_back(dir);
     }
 }
 
@@ -310,6 +371,42 @@ fn spawn_border(commands: &mut Commands) {
         Sprite::from_color(Color::WHITE, Vec2::new(thickness, size)),
         Transform::from_xyz(BORDER_SIZE / 2.0, 0.0, -1.0),
     ));
+}
+
+// One render texel in world units (GAME_VIEW_HEIGHT spans RENDER_HEIGHT texels).
+fn texel_world() -> f32 {
+    GAME_VIEW_HEIGHT / RENDER_HEIGHT as f32
+}
+
+// Dark grey grid lines between the cells. These are plain geometry on the
+// game camera's layer (0), so they are rendered into the low-res texture and
+// get the same crisp integer-scaled pixelation as everything else. Each line
+// is exactly one texel wide: centered half a texel off the cell boundary it
+// covers a single render-texel column/row (a cell is exactly 18 texels), so
+// the lines are uniform and hard-edged after upscaling.
+fn spawn_grid(commands: &mut Commands) {
+    let width = texel_world();
+    let offset = width * 0.5;
+    let color = Color::srgb(0.15, 0.15, 0.18);
+
+    // Internal boundaries run at world x/y = i * CELL_SIZE for i in -(N-1)..=(N-1).
+    let first = -(GRID_SIZE / 2 - 1);
+    let last = GRID_SIZE / 2 - 1;
+
+    for i in first..=last {
+        let x = i as f32 * CELL_SIZE + offset;
+        let y = i as f32 * CELL_SIZE + offset;
+
+        commands.spawn((
+            Sprite::from_color(color, Vec2::new(width, BORDER_SIZE)),
+            Transform::from_xyz(x, 0.0, -2.0),
+        ));
+
+        commands.spawn((
+            Sprite::from_color(color, Vec2::new(BORDER_SIZE, width)),
+            Transform::from_xyz(0.0, y, -2.0),
+        ));
+    }
 }
 
 fn spawn_food(
@@ -344,7 +441,14 @@ fn move_snake(
         return;
     }
 
-    snake.direction = snake.next_direction;
+    // Apply the next buffered turn. A reversal can never be queued (see
+    // keyboard_input), but guard against it here anyway.
+    while let Some(dir) = snake.input_queue.pop_front() {
+        if dir != snake.direction && dir != snake.direction.opposite() {
+            snake.direction = dir;
+            break;
+        }
+    }
 
     // Snapshot current grid positions
     let mut old_positions = Vec::new();
