@@ -3,7 +3,8 @@
 The game should run on the Android TV 10
 Smart TV Philips 48OLED806/12
 The processor type is Quad Core with P5 AI Perfect Picture Engine
-Resolution: 3820x2160 (with supported frame rates 40-120Hz)
+Resolution: 3840x2160 (with supported frame rates 40-120Hz)
+
 
 OpenGL ES/Vulkan support, we aim for a 2D game,
 Texture atlases
