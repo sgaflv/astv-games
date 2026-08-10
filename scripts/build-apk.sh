@@ -1,19 +1,28 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Build a signed Android APK from the Rust cdylib, without cargo-apk.
+# Build a signed Android APK from the Rust cdylib + Java glue, without cargo-apk.
 #
 # Pipeline:
 #   cargo ndk  -> libsnake.so
+#   javac      -> compile the miniquad Java glue (MainActivity/QuadNative)
+#   d8         -> dex the classes into classes.dex
 #   aapt2      -> base apk (binary AndroidManifest.xml)
-#   zip        -> add native lib under lib/<abi>/
+#   zip        -> add native lib under lib/<abi>/ and classes.dex
 #   zipalign   -> align the apk
 #   apksigner  -> sign with a debug keystore
+#
+# Requirements:
+#   - Rust target installed (rustup target add <target>)
+#   - cargo-ndk
+#   - Android SDK with build-tools, platforms/android-30+ and NDK
+#   - JDK (javac/d8) for the Java glue
 #
 # Configuration via environment:
 #   ANDROID_ABI  default: armeabi-v7a   (also: arm64-v8a, x86, x86_64)
 #   PROFILE      default: debug         (also: release)
-#   PLATFORM     default: 26            (Android API level)
+#   PLATFORM     default: 26            (native min API level)
+#   JAVA_SOURCE  default: 11            (javac -source/-target for the glue)
 #   ANDROID_HOME / ANDROID_SDK_ROOT     SDK location (default: $HOME/Android/Sdk)
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -22,6 +31,7 @@ cd "$ROOT"
 PROFILE="${PROFILE:-debug}"
 ANDROID_ABI="${ANDROID_ABI:-armeabi-v7a}"
 PLATFORM="${PLATFORM:-26}"
+JAVA_SOURCE="${JAVA_SOURCE:-11}"
 SDK="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-$HOME/Android/Sdk}}"
 
 case "$ANDROID_ABI" in
@@ -43,6 +53,13 @@ fi
 AAPT2="$BUILD_TOOLS/aapt2"
 ZIPALIGN="$BUILD_TOOLS/zipalign"
 APKSIGNER="$BUILD_TOOLS/apksigner"
+D8="$BUILD_TOOLS/d8"
+JAVAC="$(command -v javac || true)"
+
+if [ -z "$JAVAC" ]; then
+    echo "error: javac not found on PATH (JDK required for the Java glue)" >&2
+    exit 1
+fi
 
 # 1. Build the native library
 echo ">> cargo ndk ($ANDROID_ABI, platform $PLATFORM, profile $PROFILE)"
@@ -65,6 +82,29 @@ trap 'rm -rf "$STAGE"' EXIT
 OUT_DIR="$ROOT/target/apk"
 mkdir -p "$OUT_DIR"
 
+# 3. Compile the Java glue (MainActivity/QuadNative) and dex it.
+JAVA_SOURCES="$(find "$ROOT/android/java" -name '*.java')"
+if [ -z "$JAVA_SOURCES" ]; then
+    echo "error: no Java sources under $ROOT/android/java" >&2
+    exit 1
+fi
+
+echo ">> javac"
+mkdir -p "$STAGE/classes"
+# Compile against the highest installed platform android.jar. The manifest
+# targets API 30, and the glue guards API 30 calls at runtime.
+"$JAVAC" \
+    -source "$JAVA_SOURCE" -target "$JAVA_SOURCE" \
+    -Xlint:-options \
+    -bootclasspath "$PLATFORM_JAR" \
+    -d "$STAGE/classes" \
+    $JAVA_SOURCES
+
+echo ">> d8"
+CLASSES="$(find "$STAGE/classes" -name '*.class')"
+"$D8" --release --min-api "$PLATFORM" --lib "$PLATFORM_JAR" \
+    --output "$STAGE" $CLASSES
+
 echo ">> aapt2 link"
 "$AAPT2" link \
     -o "$STAGE/base.apk" \
@@ -73,7 +113,7 @@ echo ">> aapt2 link"
 
 mkdir -p "$STAGE/lib/$ANDROID_ABI"
 cp "$SO" "$STAGE/lib/$ANDROID_ABI/"
-( cd "$STAGE" && zip -qr0 base.apk lib )
+( cd "$STAGE" && zip -qr0 base.apk lib classes.dex )
 
 echo ">> zipalign"
 "$ZIPALIGN" -f -p 4 "$STAGE/base.apk" "$STAGE/aligned.apk"

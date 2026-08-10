@@ -6,21 +6,27 @@
 
     <uses-sdk android:minSdkVersion="26" android:targetSdkVersion="30"/>
 
+    <!-- Rendered on a TV: no touchscreen required, no 5GHz requirement. -->
+    <uses-feature
+        android:name="android.hardware.touchscreen"
+        android:required="false"/>
+
     <application
         android:label="snake"
-        android:hasCode="false"
+        android:hasCode="true"
         android:debuggable="true">
 
         <activity
-            android:name="android.app.NativeActivity"
+            android:name="rust.snake.MainActivity"
             android:exported="true"
-            android:configChanges="orientation|keyboardHidden|screenSize">
-            <meta-data
-                android:name="android.app.lib_name"
-                android:value="snake"/>
+            android:configChanges="orientation|keyboardHidden|screenSize|screenLayout|uiMode|smallestScreenSize">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN"/>
                 <category android:name="android.intent.category.LAUNCHER"/>
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN"/>
+                <category android:name="android.intent.category.LEANBACK_LAUNCHER"/>
             </intent-filter>
         </activity>
     </application>

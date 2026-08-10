@@ -30,7 +30,15 @@ clean:
 # Android
 # --------------------
 
-# Build signed debug apk (cargo ndk + aapt2/zipalign/apksigner)
+# Rust cross targets needed for Android builds
+targets:
+    rustup target add armv7-linux-androideabi
+
+# cargo check for both Android targets (no SDK required)
+check-android:
+    cargo check --target armv7-linux-androideabi
+
+# Build signed debug apk (cargo ndk + javac/d8 + aapt2/zipalign/apksigner)
 apk:
     ./scripts/build-apk.sh
 

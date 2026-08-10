@@ -14,8 +14,14 @@ GPU-friendly sprite batching
 
 Target game frame rate should be capped at 60Hz
 
-We create a game that is runnable of the ARM architecture, compilation target: 
-aarch64-linux-android
+We create a game that is runnable on the ARM architecture. The primary target is the
+32-bit userspace of the Philips TV:
+
+armeabi-v7a / armv7-linux-androideabi
+
+A 64-bit build is also supported as an alternative:
+
+aarch64-linux-android (arm64-v8a)
 
 The project should still run runnable locally, on the current machine for testing:
 x86_64-unknown-linux-gnu
