@@ -80,6 +80,12 @@ pub struct Stage {
     fps_value: u32,
     fps_accum: f64,
 
+    // Per-second render timing stats.
+    render_time_accum: f64,
+    render_time_frames: u32,
+    render_us: f64,
+    stat_accum: f64,
+
     // Input (edge detection via held state; Android auto-repeat is ignored).
     held: [bool; INPUT_COUNT],
     pause_requested: bool,
@@ -104,6 +110,10 @@ impl Stage {
             frame_count: 0,
             fps_value: 0,
             fps_accum: 0.0,
+            render_time_accum: 0.0,
+            render_time_frames: 0,
+            render_us: 0.0,
+            stat_accum: 0.0,
             held: [false; INPUT_COUNT],
             pause_requested: false,
             paused: false,
@@ -118,12 +128,11 @@ impl Stage {
         self.hud_buffer.clear();
         let _ = write!(
             self.hud_buffer,
-            "FPS: {}  screen {}x{}  render {}x{}  scale {}",
+            "FPS: {}  render {:.1} us  screen {}x{}  scale {}",
             self.fps_value,
+            self.render_us,
             self.window_w,
             self.window_h,
-            crate::render::WIDTH,
-            crate::render::HEIGHT,
             self.presenter.scale(),
         );
         self.hud_dirty = false;
@@ -131,6 +140,9 @@ impl Stage {
 
     fn render(&mut self) {
         let alpha = self.game.alpha();
+
+        // start time measure
+        let t0 = miniquad::date::now();
 
         //self.framebuffer.clear(game::bg_color());
         self.framebuffer.zero();
@@ -147,6 +159,11 @@ impl Stage {
             self.framebuffer
                 .draw_text(HUD_POS.0, HUD_POS.1 + HUD_LINE, 1, HUD_COLOR, "PAUSED");
         }
+
+        // end time measure
+        let t1 = miniquad::date::now();
+        self.render_time_accum += t1 - t0;
+        self.render_time_frames += 1;
 
         self.presenter.present(&self.framebuffer);
     }
@@ -188,6 +205,17 @@ impl EventHandler for Stage {
         if self.frame_count.is_multiple_of(HUD_REFRESH_EVERY) {
             self.fps_value = (30.0 / self.fps_accum.max(1e-9)).round() as u32;
             self.fps_accum = 0.0;
+            self.hud_dirty = true;
+        }
+
+        // Average render time over the last second, stat updated once a second.
+        self.stat_accum += dt;
+        if self.stat_accum >= 1.0 {
+            self.render_us =
+                self.render_time_accum / self.render_time_frames.max(1) as f64 * 1_000_000.0;
+            self.render_time_accum = 0.0;
+            self.render_time_frames = 0;
+            self.stat_accum -= 1.0;
             self.hud_dirty = true;
         }
     }

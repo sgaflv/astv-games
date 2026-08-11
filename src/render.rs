@@ -40,12 +40,14 @@ pub trait Renderer {
 /// upscale.
 pub struct Framebuffer {
     pixels: Vec<u8>,
+    buffer: Vec<u8>,
 }
 
 impl Framebuffer {
     pub fn new() -> Framebuffer {
         Framebuffer {
             pixels: vec![0; BYTES_PER_FRAME],
+            buffer: vec![0; WIDTH * 3],
         }
     }
 
@@ -84,6 +86,29 @@ impl Default for Framebuffer {
     }
 }
 
+fn fill_pattern(buffer: &mut [u8], color: Color, len: usize) {
+    let len = len.min(buffer.len());
+    if len == 0 {
+        return;
+    }
+
+    buffer[0] = color.r;
+    if len > 1 {
+        buffer[1] = color.g;
+    }
+    if len > 2 {
+        buffer[2] = color.b;
+    }
+
+    let mut filled = len.min(3);
+
+    while filled < len {
+        let copy = filled.min(len - filled);
+        buffer.copy_within(0..copy, filled);
+        filled += copy;
+    }
+}
+
 impl Renderer for Framebuffer {
     fn clear(&mut self, color: Color) {
         for px in self.pixels.chunks_exact_mut(3) {
@@ -102,18 +127,27 @@ impl Renderer for Framebuffer {
         let y0 = y.max(0);
         let x1 = (x + w).min(WIDTH as i32);
         let y1 = (y + h).min(HEIGHT as i32);
+
         if x0 >= x1 || y0 >= y1 {
             return;
         }
-        let stride = WIDTH as i32;
+
+        let x0 = x0 as usize;
+        let y0 = y0 as usize;
+        let x1 = x1 as usize;
+        let y1 = y1 as usize;
+
+        let start = x0 * 3;
+        let row_bytes = (x1 - x0) * 3;
+
+        fill_pattern(&mut self.buffer[..row_bytes], color, row_bytes);
+
+        let source = &self.buffer[..row_bytes];
+        let stride = WIDTH * 3;
+
         for py in y0..y1 {
-            let base = (py * stride + x0) * 3;
-            let row = &mut self.pixels[base as usize..(base + (x1 - x0) * 3) as usize];
-            for px in row.chunks_exact_mut(3) {
-                px[0] = color.r;
-                px[1] = color.g;
-                px[2] = color.b;
-            }
+            let dst = py * stride + start;
+            self.pixels[dst..dst + row_bytes].copy_from_slice(source);
         }
     }
 
