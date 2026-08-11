@@ -154,10 +154,11 @@ impl Snake {
         self.queue_len = 1;
     }
 
-    /// Advance one snake move (one board tick). `food` is the shared food cell:
-    /// if the head reaches it the snake grows and `grew_last_tick` is set (the
-    /// game respawns the food). The snake wraps at the board edges.
-    pub fn move_tick(&mut self, food: Cell) {
+    /// Advance one snake move (one board tick). `foods` is the shared food
+    /// pool: if the head reaches any of them the snake grows and
+    /// `grew_last_tick` is set (the game removes the eaten food cell and
+    /// respawns it). The snake wraps at the board edges.
+    pub fn move_tick(&mut self, foods: &[Cell]) {
         // Apply the next buffered turn. A reversal can never be queued, but
         // guard against it here anyway.
         while self.queue_len > 0 {
@@ -194,7 +195,7 @@ impl Snake {
 
         self.grew_last_tick = false;
 
-        let ate_food = head == food;
+        let ate_food = foods.contains(&head);
 
         // Move body (tail first).
         for i in (1..self.body.len()).rev() {
@@ -238,6 +239,21 @@ impl Snake {
             });
             self.grew_last_tick = true;
         }
+    }
+
+    /// Split the snake at body index `index` (the cell that was bitten). The
+    /// head part `[0..=index]` keeps moving; the detached tail `[index+1..]`
+    /// is returned with its segments snapped static (they no longer move).
+    /// An out-of-range index clamps to the last cell and severs nothing.
+    pub fn split_at(&mut self, index: usize) -> Vec<Segment> {
+        let index = index.min(self.body.len() - 1);
+        self.body
+            .drain(index + 1..)
+            .map(|s| Segment {
+                current: s.current,
+                previous: s.current,
+            })
+            .collect()
     }
 
     /// Draw the snake body and head details into a logical-coordinate renderer.
@@ -384,7 +400,7 @@ mod tests {
         // Head starts at x = 3, moving right. The rightmost cell is x = 39; the
         // 37th move passes the edge and wraps to x = 0.
         for _ in 0..37 {
-            snake.move_tick(Cell { x: 100, y: 100 });
+            snake.move_tick(&[]);
         }
         assert_eq!(snake.head(), Cell { x: 0, y: 0 });
     }
@@ -394,10 +410,10 @@ mod tests {
         let mut snake = snake();
         snake.queue_direction(Direction::Down);
         snake.queue_direction(Direction::Left);
-        snake.move_tick(Cell { x: 100, y: 100 });
+        snake.move_tick(&[]);
         // First tick applies Down, moving from (3, 0) to (3, 1).
         assert_eq!(snake.head(), Cell { x: 3, y: 1 });
-        snake.move_tick(Cell { x: 100, y: 100 });
+        snake.move_tick(&[]);
         // Second tick applies Left -> (2, 1).
         assert_eq!(snake.head(), Cell { x: 2, y: 1 });
     }
@@ -408,7 +424,7 @@ mod tests {
         snake.queue_direction(Direction::Right); // repeat, ignored
         snake.queue_direction(Direction::Left); // reversal, ignored
         snake.queue_direction(Direction::Down);
-        snake.move_tick(Cell { x: 100, y: 100 });
+        snake.move_tick(&[]);
         assert_eq!(snake.head(), Cell { x: 3, y: 1 });
     }
 
@@ -416,11 +432,11 @@ mod tests {
     fn grows_when_reaching_food() {
         let mut snake = snake();
         // Plant the food directly on the head's path.
-        snake.move_tick(Cell { x: 4, y: 0 });
+        snake.move_tick(&[Cell { x: 4, y: 0 }]);
         assert!(snake.grew_last_tick);
         assert_eq!(snake.body.len(), 5);
         // A tick without food does not grow.
-        snake.move_tick(Cell { x: 100, y: 100 });
+        snake.move_tick(&[]);
         assert!(!snake.grew_last_tick);
         assert_eq!(snake.body.len(), 5);
     }
@@ -464,6 +480,42 @@ mod tests {
         let pixels = draw_head_pixels(&snake);
         assert!(!has_pixel(&pixels, EYE_COLOR));
         assert!(has_pixel(&pixels, TONGUE_COLOR));
+    }
+
+    #[test]
+    fn split_at_severs_the_tail_after_the_bitten_cell() {
+        let mut snake = snake();
+        // Grow to 5 cells: (4,0),(3,0),(2,0),(1,0),(1,0).
+        snake.move_tick(&[Cell { x: 4, y: 0 }]);
+        assert_eq!(snake.body.len(), 5);
+        // Bite the cell at index 2: keep [0..=2], sever the two cells behind it.
+        let severed = snake.split_at(2);
+        assert_eq!(snake.body.len(), 3);
+        assert_eq!(snake.head(), Cell { x: 4, y: 0 });
+        assert_eq!(severed.len(), 2);
+        // Severed segments are snapped static (no interpolation).
+        for s in &severed {
+            assert_eq!(s.current, s.previous);
+        }
+        assert_eq!(severed[0].current, Cell { x: 1, y: 0 });
+    }
+
+    #[test]
+    fn split_at_clamps_and_handles_extremes() {
+        // Biting the head (index 0) leaves a single head cell.
+        let mut bitten = snake();
+        let severed = bitten.split_at(0);
+        assert_eq!(bitten.body.len(), 1);
+        assert_eq!(bitten.head(), Cell { x: 3, y: 0 });
+        assert_eq!(severed.len(), 3);
+        for s in &severed {
+            assert_eq!(s.current, s.previous);
+        }
+        // An out-of-range index severs nothing.
+        let mut other = snake();
+        let severed = other.split_at(99);
+        assert_eq!(other.body.len(), 4);
+        assert!(severed.is_empty());
     }
 
     #[test]
