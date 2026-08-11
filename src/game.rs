@@ -8,7 +8,7 @@ use rand::rngs::ThreadRng;
 pub const SIM_STEP_HZ: u32 = 60;
 
 /// Seconds between snake move ticks.
-pub const MOVE_INTERVAL: f64 = 0.5;
+pub const MOVE_INTERVAL: f64 = 0.2;
 
 /// Number of fixed simulation steps per move tick (0.5 s * 60 Hz).
 pub const TICK_STEPS: u32 = (MOVE_INTERVAL * SIM_STEP_HZ as f64) as u32;

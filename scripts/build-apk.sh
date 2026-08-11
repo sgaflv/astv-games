@@ -91,12 +91,10 @@ fi
 
 echo ">> javac"
 mkdir -p "$STAGE/classes"
-# Compile against the highest installed platform android.jar. The manifest
-# targets API 30, and the glue guards API 30 calls at runtime.
 "$JAVAC" \
-    -source "$JAVA_SOURCE" -target "$JAVA_SOURCE" \
-    -Xlint:-options \
-    -bootclasspath "$PLATFORM_JAR" \
+    -source "$JAVA_SOURCE" \
+    -target "$JAVA_SOURCE" \
+    -classpath "$PLATFORM_JAR" \
     -d "$STAGE/classes" \
     $JAVA_SOURCES
 

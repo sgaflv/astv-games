@@ -14,12 +14,16 @@ const SIM_STEP_SECONDS: f64 = 1.0 / game::SIM_STEP_HZ as f64;
 /// from running dozens of catch-up simulation steps.
 const MAX_FRAME_TIME: f64 = 0.2;
 
-/// Target presentation rate (60 FPS). The simulation stays at SIM_STEP_HZ.
-const FRAME_TIME: f64 = 1.0 / 60.0;
+/// Target presentation rate in frames per second. This is the FPS cap:
+/// change this value to cap the game at a different frame rate.
+/// The simulation always advances at SIM_STEP_HZ (fixed timestep).
+const TARGET_FPS: u32 = 60;
+
+/// Target presentation rate derived from TARGET_FPS.
+const FRAME_TIME: f64 = 1.0 / TARGET_FPS as f64;
 
 /// How often the HUD text is refreshed (avoid per-frame text blits).
 const HUD_REFRESH_EVERY: u32 = 30;
-
 const HUD_COLOR: Color = Color::rgb(204, 204, 214);
 const HUD_POS: (i32, i32) = (6, 6);
 const HUD_LINE: i32 = 10;
@@ -148,9 +152,9 @@ impl Stage {
 
 impl EventHandler for Stage {
     fn update(&mut self) {
-        // Pace at 60 FPS: sleep until the start of the next frame slot. On a
-        // v-synced 60 Hz display the swap in draw() already takes the full
-        // frame budget and this sleep becomes a no-op.
+        // Pace at TARGET_FPS: sleep until the start of the next frame slot.
+        // On a v-synced 60 Hz display the swap in draw() already takes the
+        // full frame budget and this sleep becomes a no-op.
         let now = miniquad::date::now();
         let slot_start = self.frame_start + FRAME_TIME;
         if now < slot_start {

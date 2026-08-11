@@ -13,7 +13,7 @@ Game logic (integer coords, fixed 60 Hz timestep)
 Renderer trait (clear / fill_rect / fill_circle / draw_text)
       │
       ▼
-480×270 RGBA8 CPU framebuffer (518,400 B ≈ 506 KiB)
+480×270 RGB8 CPU framebuffer (388,800 B ≈ 380 KiB)
       │
       ▼
 one texture upload + one fullscreen quad (nearest-neighbour, integer scale)
@@ -55,7 +55,7 @@ physical display (1920×1080 ×4, 3840×2160 ×8, or letterboxed)
 ## Rendering (`src/render.rs`, `src/font.rs`)
 
 * `Renderer` trait exposes only integer, top-left-origin calls.
-* `Framebuffer` is a 480x270 RGBA8 `Vec<u8>`; all shapes are clipped.
+* `Framebuffer` is a 480x270 RGB8 `Vec<u8>`; all shapes are clipped.
 * `integer_scale(w, h)` returns the largest integer scale that fits:
   `min(w/480, h/270).max(1)`.
 * Text uses the public-domain `font8x8::legacy::BASIC_LEGACY` bitmap font
@@ -63,7 +63,7 @@ physical display (1920×1080 ×4, 3840×2160 ×8, or letterboxed)
 
 ## Presentation (`src/present.rs`)
 
-* One 480x270 RGBA8 `TextureId`, `FilterMode::Nearest`, no mipmaps.
+* One 480x270 RGB8 `TextureId`, `FilterMode::Nearest`, no mipmaps.
 * Per frame: `texture_update(framebuffer)` then a single fullscreen quad with
   vertex positions recomputed on resize to center the integer-scaled viewport
   (letterbox bars blend with the background color).

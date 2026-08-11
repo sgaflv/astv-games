@@ -82,7 +82,7 @@ impl Presenter {
                 kind: TextureKind::Texture2D,
                 width: render::WIDTH as u32,
                 height: render::HEIGHT as u32,
-                format: TextureFormat::RGBA8,
+                format: TextureFormat::RGB8,
                 wrap: TextureWrap::Clamp,
                 min_filter: FilterMode::Nearest,
                 mag_filter: FilterMode::Nearest,
@@ -192,6 +192,7 @@ impl Presenter {
                 v: 1.0,
             },
         ];
+
         self.ctx
             .buffer_update(self.quad, BufferSource::slice(&vertices));
     }
