@@ -159,6 +159,11 @@ pub struct Stage {
     // ignored). Gamepad device assignment happens in the Java glue: the first
     // gamepad is player 0, the second player 1.
     held: [[bool; INPUT_COUNT]; PLAYERS],
+    // The physical key currently holding each logical input, per player. Used
+    // to ignore OS/Android auto-repeat (the same key re-sent while held)
+    // without swallowing a *different* key that maps to the same input (e.g.
+    // arrow-Up while W is held, or a second controller sharing the slot).
+    held_keys: [[Option<u32>; INPUT_COUNT]; PLAYERS],
 
     // Player-count menu.
     selection: usize,
@@ -186,6 +191,7 @@ impl Stage {
             render_us: 0.0,
             stat_accum: 0.0,
             held: [[false; INPUT_COUNT]; PLAYERS],
+            held_keys: [[None; INPUT_COUNT]; PLAYERS],
             selection: 0,
             hud_buffer: String::with_capacity(128),
             hud_dirty: true,
@@ -194,20 +200,26 @@ impl Stage {
         }
     }
 
-    /// Route one input edge (down or up). Key-down edges are dispatched to the
-    /// active state; key-up only clears the held state.
-    fn apply_input(&mut self, player: usize, input: Input, down: bool) {
+    /// Route one input edge (down or up) from the physical `key` (a platform
+    /// keycode used only to tell distinct keys apart). Key-down edges are
+    /// dispatched to the active state; key-up only clears the held state.
+    /// Auto-repeat of the *same* held key is ignored, but a different key that
+    /// maps to the same logical input is still delivered, so one player's held
+    /// key never blocks another player's (or another key's) press.
+    fn apply_input(&mut self, player: usize, key: u32, input: Input, down: bool) {
         let idx = input_index(input);
         if down {
-            if self.held[player][idx] {
-                return; // ignore Android key auto-repeat
+            if self.held_keys[player][idx] == Some(key) {
+                return; // OS/Android auto-repeat of an already-held key
             }
+            self.held_keys[player][idx] = Some(key);
             self.held[player][idx] = true;
             match self.start.state {
                 State::Menu => self.menu_input(input),
                 State::Playing => self.game_input(player, input),
             }
-        } else {
+        } else if self.held_keys[player][idx] == Some(key) {
+            self.held_keys[player][idx] = None;
             self.held[player][idx] = false;
         }
     }
@@ -245,7 +257,7 @@ impl Stage {
     fn drain_player_input(&mut self) {
         crate::input::drain_into(|event| {
             if let Some(input) = android_keycode_to_input(event.keycode) {
-                self.apply_input(event.player, input, event.down);
+                self.apply_input(event.player, event.keycode as u32, input, event.down);
             }
         });
     }
@@ -410,13 +422,13 @@ impl EventHandler for Stage {
 
     fn key_down_event(&mut self, keycode: KeyCode, _keymods: KeyMods, _repeat: bool) {
         if let Some((player, input)) = Input::from_keycode(keycode) {
-            self.apply_input(player, input, true);
+            self.apply_input(player, keycode as u32, input, true);
         }
     }
 
     fn key_up_event(&mut self, keycode: KeyCode, _keymods: KeyMods) {
         if let Some((player, input)) = Input::from_keycode(keycode) {
-            self.apply_input(player, input, false);
+            self.apply_input(player, keycode as u32, input, false);
         }
     }
 
@@ -433,4 +445,50 @@ impl EventHandler for Stage {
     }
 
     fn quit_requested_event(&mut self) {}
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Player 0 (arrows/WASD/F1-F4) and player 1 (IJKL/F5-F8) must never be
+    /// routed to the same slot: this is what keeps two keyboard players'
+    /// controls independent on the desktop.
+    #[test]
+    fn player_key_sets_are_routed_to_separate_players() {
+        use KeyCode::*;
+        let player_0 = [Up, Down, Left, Right, W, A, S, D, F1, F2, F3, F4];
+        let player_1 = [I, K, J, L, F5, F6, F7, F8];
+        for key in player_0 {
+            assert_eq!(
+                Input::from_keycode(key).unwrap().0,
+                0,
+                "keycode {} -> player 0",
+                key as u32
+            );
+        }
+        for key in player_1 {
+            assert_eq!(
+                Input::from_keycode(key).unwrap().0,
+                1,
+                "keycode {} -> player 1",
+                key as u32
+            );
+        }
+    }
+
+    /// Distinct physical keys may map to the same logical input (arrow-Up and
+    /// W both steer up). They carry distinct keycodes, so the auto-repeat
+    /// suppression in `apply_input` must treat them as separate keys: holding
+    /// one never swallows a press of the other.
+    #[test]
+    fn distinct_keys_sharing_an_input_stay_distinct() {
+        use KeyCode::*;
+        let (p0, up_arrow) = Input::from_keycode(Up).unwrap();
+        let (w0, w) = Input::from_keycode(W).unwrap();
+        assert_eq!(p0, w0);
+        assert!(matches!(up_arrow, Input::Up));
+        assert!(matches!(w, Input::Up));
+        assert_ne!(Up as u32, W as u32);
+    }
 }

@@ -100,6 +100,8 @@ physical display (1920×1080 ×4, 3840×2160 ×8, or letterboxed)
   gamepad (Android). Enter + Back/Escape + Menu/Space for global actions.
 * `Stage` keeps per-player held state (`held: [[bool; INPUT_COUNT]; PLAYERS]`)
   for edge detection and face buttons (A hides the tongue, B closes the eyes).
+  Auto-repeat suppression is keyed on the physical key (`held_keys`), so
+  holding one key never blocks a different key that maps to the same input.
 * Fixed timestep accumulator advances the sim at 60 Hz; rendering runs each
   draw and is paced to ~60 FPS with a bounded max frame time.
 * HUD shows FPS / window size / logical resolution / scale; refreshes every
@@ -113,10 +115,11 @@ physical display (1920×1080 ×4, 3840×2160 ×8, or letterboxed)
   `QuadNative.java`, implemented in `input.rs`). `Stage::update` drains it once
   per frame; on desktop the queue is never fed and drains as a no-op.
 * `MainActivity.java` assigns player slots by `InputDevice.getDeviceId()`:
-  devices exposing `SOURCE_JOYSTICK` are gamepads, first-seen = player 0,
-  second = player 1, extras clamp to player 1. Gamepad key events go through
-  the device-aware path with raw Android keycodes; non-gamepad devices (TV
-  remote, keyboard) keep the legacy miniquad key path and control player 0.
+  devices exposing `SOURCE_JOYSTICK` or `SOURCE_BUTTON` are gamepads (analog
+  or D-pad/face-button), first-seen = player 0, second = player 1, extras clamp
+  to player 1. Gamepad key events go through the device-aware path with raw
+  Android keycodes; non-gamepad devices (TV remote, keyboard) keep the legacy
+  miniquad key path and control player 0.
 
 ## Android
 

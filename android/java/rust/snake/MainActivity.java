@@ -155,8 +155,12 @@ class QuadSurface
             return assigned;
         }
         InputDevice device = InputDevice.getDevice(deviceId);
-        boolean isGamepad = device != null
-            && (device.getSources() & InputDevice.SOURCE_JOYSTICK) != 0;
+    // A device is a gamepad when it exposes analog sticks (SOURCE_JOYSTICK)
+    // or gamepad face buttons (SOURCE_GAMEPAD). The D-pad alone
+    // (SOURCE_DPAD, shared with TV remotes) is not enough, so D-pad-only
+    // gamepads without face buttons still fall back to the legacy path.
+    boolean isGamepad = device != null
+        && (device.getSources() & (InputDevice.SOURCE_JOYSTICK | InputDevice.SOURCE_GAMEPAD)) != 0;
         if (!isGamepad) {
             return -1;
         }
