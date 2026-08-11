@@ -1,7 +1,8 @@
 use crate::engine::font;
 use crate::engine::present::Presenter;
 use crate::engine::render::{Color, Framebuffer, Renderer};
-use crate::game::{self, Direction, Game, PLAYERS};
+use crate::engine::start::{Start, State};
+use crate::game::{self, Direction, PLAYERS};
 
 use miniquad::{EventHandler, KeyCode, KeyMods};
 
@@ -38,13 +39,6 @@ const MENU_OPTION_SCALE: i32 = 2;
 const MENU_OPTION_Y: i32 = 150;
 const MENU_OPTION_LINE: i32 = 36;
 const MENU_DIM_COLOR: Color = Color::rgb(120, 120, 130);
-
-/// Top-level app state: player-count menu or the running game.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum State {
-    Menu,
-    Playing,
-}
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Input {
@@ -145,13 +139,12 @@ fn android_keycode_to_input(keycode: i32) -> Option<Input> {
 }
 
 pub struct Stage {
-    game: Game,
+    start: Start,
     framebuffer: Framebuffer,
     presenter: Presenter,
 
     // Timing.
     frame_start: f64,
-    sim_accumulator: f64,
     frame_count: u32,
     fps_value: u32,
     fps_accum: f64,
@@ -166,11 +159,8 @@ pub struct Stage {
     // ignored). Gamepad device assignment happens in the Java glue: the first
     // gamepad is player 0, the second player 1.
     held: [[bool; INPUT_COUNT]; PLAYERS],
-    pause_requested: bool,
-    paused: bool,
 
     // Player-count menu.
-    state: State,
     selection: usize,
 
     // HUD.
@@ -184,11 +174,10 @@ impl Stage {
     pub fn new() -> Stage {
         let now = miniquad::date::now();
         Stage {
-            game: Game::new(PLAYERS),
+            start: Start::new(),
             framebuffer: Framebuffer::new(),
             presenter: Presenter::new(),
             frame_start: now,
-            sim_accumulator: 0.0,
             frame_count: 0,
             fps_value: 0,
             fps_accum: 0.0,
@@ -197,9 +186,6 @@ impl Stage {
             render_us: 0.0,
             stat_accum: 0.0,
             held: [[false; INPUT_COUNT]; PLAYERS],
-            pause_requested: false,
-            paused: false,
-            state: State::Menu,
             selection: 0,
             hud_buffer: String::with_capacity(128),
             hud_dirty: true,
@@ -217,7 +203,7 @@ impl Stage {
                 return; // ignore Android key auto-repeat
             }
             self.held[player][idx] = true;
-            match self.state {
+            match self.start.state {
                 State::Menu => self.menu_input(input),
                 State::Playing => self.game_input(player, input),
             }
@@ -232,7 +218,7 @@ impl Stage {
             Input::Up | Input::Down | Input::Left | Input::Right => {
                 self.selection = 1 - self.selection
             }
-            Input::Confirm | Input::GameA | Input::GameB => self.start_game(self.selection + 1),
+            Input::Confirm | Input::GameA | Input::GameB => self.start.begin(self.selection + 1),
             Input::Back => miniquad::window::request_quit(),
             Input::Pause | Input::GameX | Input::GameY => {}
         }
@@ -242,25 +228,16 @@ impl Stage {
     /// buttons are held-state only.
     fn game_input(&mut self, player: usize, input: Input) {
         match input {
-            Input::Up => self.game.queue_direction(player, Direction::Up),
-            Input::Down => self.game.queue_direction(player, Direction::Down),
-            Input::Left => self.game.queue_direction(player, Direction::Left),
-            Input::Right => self.game.queue_direction(player, Direction::Right),
+            Input::Up => self.start.game.queue_direction(player, Direction::Up),
+            Input::Down => self.start.game.queue_direction(player, Direction::Down),
+            Input::Left => self.start.game.queue_direction(player, Direction::Left),
+            Input::Right => self.start.game.queue_direction(player, Direction::Right),
             Input::Confirm => {}
             Input::Back => miniquad::window::request_quit(),
-            Input::Pause => self.pause_requested = true,
+            Input::Pause => self.start.pause_requested = true,
             // Gamepad face buttons are held-state only for now.
             Input::GameA | Input::GameB | Input::GameX | Input::GameY => {}
         }
-    }
-
-    /// Start a new game with `players` snakes and enter the playing state.
-    fn start_game(&mut self, players: usize) {
-        self.game = Game::new(players);
-        self.state = State::Playing;
-        self.paused = false;
-        self.pause_requested = false;
-        self.sim_accumulator = 0.0;
     }
 
     /// Drain device-aware gamepad events (Android). No-op on desktop.
@@ -293,11 +270,11 @@ impl Stage {
 
         self.framebuffer.zero();
 
-        match self.state {
+        match self.start.state {
             State::Menu => self.draw_menu(),
             State::Playing => {
-                let alpha = self.game.alpha();
-                self.game.draw(&mut self.framebuffer, alpha);
+                let alpha = self.start.game.alpha();
+                self.start.game.draw(&mut self.framebuffer, alpha);
 
                 if self.hud_dirty {
                     self.refresh_hud();
@@ -306,7 +283,7 @@ impl Stage {
                 self.framebuffer
                     .draw_text(HUD_POS.0, HUD_POS.1, 1, HUD_COLOR, &self.hud_buffer);
 
-                if self.paused {
+                if self.start.paused {
                     self.framebuffer.draw_text(
                         HUD_POS.0,
                         HUD_POS.1 + HUD_LINE,
@@ -371,9 +348,9 @@ impl EventHandler for Stage {
         let dt = (now - self.frame_start).min(MAX_FRAME_TIME);
         self.frame_start = now;
 
-        if self.pause_requested {
-            self.pause_requested = false;
-            self.paused = !self.paused;
+        if self.start.pause_requested {
+            self.start.pause_requested = false;
+            self.start.paused = !self.start.paused;
         }
 
         // Device-aware gamepad input (Android); the Java glue assigned each
@@ -382,19 +359,19 @@ impl EventHandler for Stage {
         self.drain_player_input();
 
         // Fixed-timestep simulation.
-        if !self.paused && self.state == State::Playing {
+        if !self.start.paused && self.start.state == State::Playing {
             // Placeholder gamepad face-button actions (while held). A hides
             // the tongue, B closes the eyes; X/Y are reserved for later use.
-            for (p, snake) in self.game.snakes.iter_mut().enumerate() {
+            for (p, snake) in self.start.game.snakes.iter_mut().enumerate() {
                 snake.tongue_hidden = self.held[p][input_index(Input::GameA)];
                 snake.eyes_closed = self.held[p][input_index(Input::GameB)];
             }
 
-            self.sim_accumulator += dt;
+            self.start.sim_accumulator += dt;
             let mut steps = 0;
-            while self.sim_accumulator >= SIM_STEP_SECONDS && steps < 16 {
-                self.game.step();
-                self.sim_accumulator -= SIM_STEP_SECONDS;
+            while self.start.sim_accumulator >= SIM_STEP_SECONDS && steps < 16 {
+                self.start.game.step();
+                self.start.sim_accumulator -= SIM_STEP_SECONDS;
                 steps += 1;
             }
         }
@@ -445,14 +422,14 @@ impl EventHandler for Stage {
 
     fn window_minimized_event(&mut self) {
         // Lifecycle pause: stop simulating while the activity is backgrounded.
-        self.paused = true;
+        self.start.paused = true;
     }
 
     fn window_restored_event(&mut self) {
-        self.paused = false;
+        self.start.paused = false;
         let now = miniquad::date::now();
         self.frame_start = now;
-        self.sim_accumulator = 0.0;
+        self.start.sim_accumulator = 0.0;
     }
 
     fn quit_requested_event(&mut self) {}
