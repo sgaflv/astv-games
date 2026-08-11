@@ -1,4 +1,4 @@
-use crate::render::{Color, Renderer};
+use crate::engine::render::{Color, Renderer};
 
 use rand::RngExt;
 use rand::rngs::ThreadRng;

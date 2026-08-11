@@ -1,6 +1,6 @@
+use crate::engine::present::Presenter;
+use crate::engine::render::{Color, Framebuffer, Renderer};
 use crate::game::{self, Direction, Snake};
-use crate::present::Presenter;
-use crate::render::{Color, Framebuffer, Renderer};
 
 use miniquad::{EventHandler, KeyCode, KeyMods};
 

@@ -1,9 +1,5 @@
-pub mod font;
+pub mod engine;
 pub mod game;
-pub mod present;
-pub mod render;
-
-mod app;
 
 /// Local desktop window size. Independent of the 480x270 logical resolution;
 /// on a 16:9 display it maps to an integer scale (960x540 -> x2).
@@ -29,7 +25,7 @@ fn conf() -> miniquad::conf::Conf {
 /// Desktop entry point (x86_64-unknown-linux-gnu etc.).
 #[cfg(not(target_os = "android"))]
 pub fn desktop_main() {
-    miniquad::start(conf(), || Box::new(app::Stage::new()));
+    miniquad::start(conf(), || Box::new(engine::app::Stage::new()));
 }
 
 /// Android entry point, called from the Java glue (`quad_main`), which in turn

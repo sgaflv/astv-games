@@ -1,4 +1,4 @@
-use crate::font;
+use crate::engine::font;
 
 /// Logical rendering resolution. 480 x 270 is 16:9 and scales with an exact
 /// integer factor to 1920 x 1080 (x4) and 3840 x 2160 (x8).
