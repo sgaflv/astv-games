@@ -185,7 +185,7 @@ mod tests {
 
     #[test]
     fn initial_two_snake_layout() {
-        let game = Game::new();
+        let game = Game::new(2);
         assert_eq!(game.snakes.len(), 2);
         assert_eq!(head(&game, 0), Cell { x: 3, y: 0 });
         assert_eq!(game.snakes[0].direction, Direction::Right);
@@ -197,8 +197,15 @@ mod tests {
     }
 
     #[test]
+    fn one_player_game_spawns_a_single_snake() {
+        let game = Game::new(1);
+        assert_eq!(game.snakes.len(), 1);
+        assert_eq!(head(&game, 0), Cell { x: 3, y: 0 });
+    }
+
+    #[test]
     fn both_snakes_move_in_lockstep() {
-        let mut game = Game::new();
+        let mut game = Game::new(2);
         for _ in 0..TICK_STEPS {
             game.step();
         }
@@ -208,7 +215,7 @@ mod tests {
 
     #[test]
     fn snakes_share_one_food() {
-        let mut game = Game::new();
+        let mut game = Game::new(2);
         // Steer snake 0 onto the food; snake 1 wanders.
         let mut reached = false;
         for _ in 0..TICK_STEPS * 300 {
@@ -248,7 +255,7 @@ mod tests {
 
     #[test]
     fn per_player_input_routes_to_the_right_snake() {
-        let mut game = Game::new();
+        let mut game = Game::new(2);
         game.queue_direction(0, Direction::Down);
         game.queue_direction(1, Direction::Up);
         for _ in 0..TICK_STEPS {
@@ -260,7 +267,7 @@ mod tests {
 
     #[test]
     fn alpha_is_strictly_increasing_and_wraps() {
-        let mut game = Game::new();
+        let mut game = Game::new(2);
         let mut prev = 0u32;
         for _ in 0..TICK_STEPS {
             let a = game.alpha();

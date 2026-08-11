@@ -58,8 +58,9 @@ physical display (1920×1080 ×4, 3840×2160 ×8, or letterboxed)
 
 * Fixed simulation step: 60 Hz (`SIM_STEP_HZ`), snakes move every 0.5 s
   (`TICK_STEPS = 30` steps per move), in lockstep, sharing one food.
-* `Game` owns `Vec<Snake>` (`PLAYERS = 2`), the shared `food`, the RNG (food
-  respawn off any snake body) and the shared tick clock/`alpha()`.
+* `Game` owns `Vec<Snake>` (up to `PLAYERS = 2`), the shared `food`, the RNG
+  (food respawn off any snake body) and the shared tick clock/`alpha()`.
+  `Game::new(players)` spawns 1 or 2 snakes; the menu chooses the count.
 * Board: `GRID_SIZE_X = 20` x `GRID_SIZE_Y = 11` cells, 0-based coords
   (`x` in 0..20, `y` in 0..11, top-left origin), edges wrap.
 * Direction changes are buffered in a small ring buffer
@@ -91,6 +92,9 @@ physical display (1920×1080 ×4, 3840×2160 ×8, or letterboxed)
 ## App loop (`src/app.rs`)
 
 * `Stage` implements `miniquad::EventHandler` (`update`/`draw`).
+* Two states: `Menu` (1 or 2 player selection) and `Playing`. The menu is
+  navigated with the direction keys (selection cycles), confirmed with Enter/
+  OK, and starts a `Game` with the chosen player count; Back quits.
 * `Input` (`Input` enum) maps Android TV/desktop keys to game actions.
   Player 1: DPAD/WASD + F1-F4; player 2: IJKL + F5-F8 (desktop) or the second
   gamepad (Android). Enter + Back/Escape + Menu/Space for global actions.

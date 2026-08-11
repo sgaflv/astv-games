@@ -1,3 +1,4 @@
+use crate::engine::font;
 use crate::engine::present::Presenter;
 use crate::engine::render::{Color, Framebuffer, Renderer};
 use crate::game::{self, Direction, Game, PLAYERS};
@@ -27,6 +28,23 @@ const HUD_REFRESH_EVERY: u32 = 30;
 const HUD_COLOR: Color = Color::rgb(204, 204, 214);
 const HUD_POS: (i32, i32) = (6, 6);
 const HUD_LINE: i32 = 10;
+
+// Menu (player-count selection) constants.
+const MENU_TITLE: &str = "SNAKE";
+const MENU_TITLE_SCALE: i32 = 3;
+const MENU_TITLE_Y: i32 = 54;
+const MENU_OPTIONS: [&str; 2] = ["1 PLAYER", "2 PLAYERS"];
+const MENU_OPTION_SCALE: i32 = 2;
+const MENU_OPTION_Y: i32 = 150;
+const MENU_OPTION_LINE: i32 = 36;
+const MENU_DIM_COLOR: Color = Color::rgb(120, 120, 130);
+
+/// Top-level app state: player-count menu or the running game.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum State {
+    Menu,
+    Playing,
+}
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Input {
@@ -113,6 +131,7 @@ fn android_keycode_to_input(keycode: i32) -> Option<Input> {
         21 => Some(Input::Left),    // KEYCODE_DPAD_LEFT
         22 => Some(Input::Right),   // KEYCODE_DPAD_RIGHT
         66 => Some(Input::Confirm), // KEYCODE_ENTER
+        23 => Some(Input::Confirm), // KEYCODE_DPAD_CENTER (OK; gamepad A often sends this)
         4 => Some(Input::Back),     // KEYCODE_BACK
         111 => Some(Input::Back),   // KEYCODE_ESCAPE
         82 => Some(Input::Pause),   // KEYCODE_MENU
@@ -150,6 +169,10 @@ pub struct Stage {
     pause_requested: bool,
     paused: bool,
 
+    // Player-count menu.
+    state: State,
+    selection: usize,
+
     // HUD.
     hud_buffer: String,
     hud_dirty: bool,
@@ -161,7 +184,7 @@ impl Stage {
     pub fn new() -> Stage {
         let now = miniquad::date::now();
         Stage {
-            game: Game::new(),
+            game: Game::new(PLAYERS),
             framebuffer: Framebuffer::new(),
             presenter: Presenter::new(),
             frame_start: now,
@@ -176,6 +199,8 @@ impl Stage {
             held: [[false; INPUT_COUNT]; PLAYERS],
             pause_requested: false,
             paused: false,
+            state: State::Menu,
+            selection: 0,
             hud_buffer: String::with_capacity(128),
             hud_dirty: true,
             window_w: 0,
@@ -183,7 +208,8 @@ impl Stage {
         }
     }
 
-    /// Route one input edge (down or up) to the given player's snake.
+    /// Route one input edge (down or up). Key-down edges are dispatched to the
+    /// active state; key-up only clears the held state.
     fn apply_input(&mut self, player: usize, input: Input, down: bool) {
         let idx = input_index(input);
         if down {
@@ -191,20 +217,50 @@ impl Stage {
                 return; // ignore Android key auto-repeat
             }
             self.held[player][idx] = true;
-            match input {
-                Input::Up => self.game.queue_direction(player, Direction::Up),
-                Input::Down => self.game.queue_direction(player, Direction::Down),
-                Input::Left => self.game.queue_direction(player, Direction::Left),
-                Input::Right => self.game.queue_direction(player, Direction::Right),
-                Input::Confirm => {}
-                Input::Back => miniquad::window::request_quit(),
-                Input::Pause => self.pause_requested = true,
-                // Gamepad face buttons are held-state only for now.
-                Input::GameA | Input::GameB | Input::GameX | Input::GameY => {}
+            match self.state {
+                State::Menu => self.menu_input(input),
+                State::Playing => self.game_input(player, input),
             }
         } else {
             self.held[player][idx] = false;
         }
+    }
+
+    /// Menu navigation: direction keys cycle the selection, confirm starts.
+    fn menu_input(&mut self, input: Input) {
+        match input {
+            Input::Up | Input::Down | Input::Left | Input::Right => {
+                self.selection = 1 - self.selection
+            }
+            Input::Confirm => self.start_game(self.selection + 1),
+            Input::Back => miniquad::window::request_quit(),
+            Input::Pause | Input::GameA | Input::GameB | Input::GameX | Input::GameY => {}
+        }
+    }
+
+    /// In-game input: direction queues a turn on the player's snake, face
+    /// buttons are held-state only.
+    fn game_input(&mut self, player: usize, input: Input) {
+        match input {
+            Input::Up => self.game.queue_direction(player, Direction::Up),
+            Input::Down => self.game.queue_direction(player, Direction::Down),
+            Input::Left => self.game.queue_direction(player, Direction::Left),
+            Input::Right => self.game.queue_direction(player, Direction::Right),
+            Input::Confirm => {}
+            Input::Back => miniquad::window::request_quit(),
+            Input::Pause => self.pause_requested = true,
+            // Gamepad face buttons are held-state only for now.
+            Input::GameA | Input::GameB | Input::GameX | Input::GameY => {}
+        }
+    }
+
+    /// Start a new game with `players` snakes and enter the playing state.
+    fn start_game(&mut self, players: usize) {
+        self.game = Game::new(players);
+        self.state = State::Playing;
+        self.paused = false;
+        self.pause_requested = false;
+        self.sim_accumulator = 0.0;
     }
 
     /// Drain device-aware gamepad events (Android). No-op on desktop.
@@ -232,27 +288,34 @@ impl Stage {
     }
 
     fn render(&mut self) {
-        let alpha = self.game.alpha();
-
         // start time measure
         let t0 = miniquad::date::now();
 
-        //self.framebuffer.clear(game::bg_color());
         self.framebuffer.zero();
 
-        // draw game state
-        self.game.draw(&mut self.framebuffer, alpha);
+        match self.state {
+            State::Menu => self.draw_menu(),
+            State::Playing => {
+                let alpha = self.game.alpha();
+                self.game.draw(&mut self.framebuffer, alpha);
 
-        if self.hud_dirty {
-            self.refresh_hud();
-        }
+                if self.hud_dirty {
+                    self.refresh_hud();
+                }
 
-        self.framebuffer
-            .draw_text(HUD_POS.0, HUD_POS.1, 1, HUD_COLOR, &self.hud_buffer);
+                self.framebuffer
+                    .draw_text(HUD_POS.0, HUD_POS.1, 1, HUD_COLOR, &self.hud_buffer);
 
-        if self.paused {
-            self.framebuffer
-                .draw_text(HUD_POS.0, HUD_POS.1 + HUD_LINE, 1, HUD_COLOR, "PAUSED");
+                if self.paused {
+                    self.framebuffer.draw_text(
+                        HUD_POS.0,
+                        HUD_POS.1 + HUD_LINE,
+                        1,
+                        HUD_COLOR,
+                        "PAUSED",
+                    );
+                }
+            }
         }
 
         // end time measure
@@ -261,6 +324,30 @@ impl Stage {
         self.render_time_frames += 1;
 
         self.presenter.present(&self.framebuffer);
+    }
+
+    /// Draw the player-count selection menu. The selected option gets a '>'
+    /// cursor and a brighter color.
+    fn draw_menu(&mut self) {
+        let w = self.framebuffer.width() as i32;
+
+        let tx = (w - font::text_width(MENU_TITLE, MENU_TITLE_SCALE)) / 2;
+        self.framebuffer
+            .draw_text(tx, MENU_TITLE_Y, MENU_TITLE_SCALE, HUD_COLOR, MENU_TITLE);
+
+        for (i, option) in MENU_OPTIONS.iter().enumerate() {
+            let selected = i == self.selection;
+            let y = MENU_OPTION_Y + i as i32 * MENU_OPTION_LINE;
+            // Center the option text; the cursor column sits just to its left.
+            let x = (w - font::text_width(option, MENU_OPTION_SCALE)) / 2;
+            let color = if selected { HUD_COLOR } else { MENU_DIM_COLOR };
+            if selected {
+                self.framebuffer
+                    .draw_text(x - 40, y, MENU_OPTION_SCALE, HUD_COLOR, ">");
+            }
+            self.framebuffer
+                .draw_text(x, y, MENU_OPTION_SCALE, color, option);
+        }
     }
 }
 
@@ -294,15 +381,15 @@ impl EventHandler for Stage {
         #[cfg(target_os = "android")]
         self.drain_player_input();
 
-        // Placeholder gamepad face-button actions (while held). A hides the
-        // tongue, B closes the eyes; X/Y are reserved for later use.
-        for (p, snake) in self.game.snakes.iter_mut().enumerate() {
-            snake.tongue_hidden = self.held[p][input_index(Input::GameA)];
-            snake.eyes_closed = self.held[p][input_index(Input::GameB)];
-        }
-
         // Fixed-timestep simulation.
-        if !self.paused {
+        if !self.paused && self.state == State::Playing {
+            // Placeholder gamepad face-button actions (while held). A hides
+            // the tongue, B closes the eyes; X/Y are reserved for later use.
+            for (p, snake) in self.game.snakes.iter_mut().enumerate() {
+                snake.tongue_hidden = self.held[p][input_index(Input::GameA)];
+                snake.eyes_closed = self.held[p][input_index(Input::GameB)];
+            }
+
             self.sim_accumulator += dt;
             let mut steps = 0;
             while self.sim_accumulator >= SIM_STEP_SECONDS && steps < 16 {
