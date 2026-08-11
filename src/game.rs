@@ -20,9 +20,6 @@ pub const MOVE_INTERVAL: f64 = 0.5;
 /// Number of fixed simulation steps per move tick (0.5 s * 60 Hz).
 pub const TICK_STEPS: u32 = (MOVE_INTERVAL * SIM_STEP_HZ as f64) as u32;
 
-/// Number of ticks a shed corpse waits before turning into the shared food.
-pub const CORPSE_LIFETIME_TICKS: u32 = 5;
-
 /// Number of players (one snake each).
 pub const PLAYERS: usize = 2;
 
@@ -43,24 +40,12 @@ const SPAWNS: [(Cell, Direction); PLAYERS] = [
     (Cell { x: 16, y: 10 }, Direction::Left),
 ];
 
-/// A static body cell shed by a bite. After `CORPSE_LIFETIME_TICKS` move ticks
-/// it turns into the shared food.
-pub struct Corpse {
-    pub segment: Segment,
-    pub color: Color,
-    /// Ticks the corpse has been on the board (incremented on each move tick).
-    pub age: u32,
-}
-
-/// The game owns the snakes, the shared food pool, the corpses shed by bites,
-/// and the shared tick clock.
+/// The game owns the snakes, the shared food pool, and the shared tick clock.
 pub struct Game {
     pub snakes: Vec<Snake>,
-    /// All food cells currently on the board. Corpses mature into extra food,
-    /// so there can be several at once.
+    /// All food cells currently on the board. Cells shed by bites turn straight
+    /// into extra food, so there can be several at once.
     food: Vec<Cell>,
-    /// Static body cells severed by bites; they age and become food.
-    pub dead: Vec<Corpse>,
     rng: ThreadRng,
     steps_in_tick: u32,
 }
@@ -86,7 +71,6 @@ impl Game {
         let mut game = Game {
             snakes,
             food: Vec::new(),
-            dead: Vec::new(),
             rng,
             steps_in_tick: 0,
         };
@@ -103,7 +87,7 @@ impl Game {
     /// TICK_STEPS steps, in lockstep, sharing the food pool. Eaten food cells
     /// are removed; a replacement only spawns when no food is left on the
     /// board. Bites (a head landing on another snake's body) are resolved
-    /// after the move, and corpses age until they turn into additional food.
+    /// after the move: the shed cells immediately turn into extra food.
     pub fn step(&mut self) {
         self.steps_in_tick += 1;
         if self.steps_in_tick >= TICK_STEPS {
@@ -111,60 +95,34 @@ impl Game {
             for s in &mut self.snakes {
                 s.move_tick(&self.food);
             }
-            // Remove any food cell a snake head reached. New food only appears
-            // when the pool has become empty.
+            // Remove any food cell a snake head reached.
             let heads: Vec<Cell> = self.snakes.iter().map(|s| s.head()).collect();
             self.food.retain(|f| !heads.contains(f));
+            // Resolve bites before topping the pool back up: shed cells turn
+            // into food immediately, so a bite must not be followed by an
+            // extra respawn. A replacement only appears when no food is left.
+            self.resolve_bites();
             if self.food.is_empty() {
                 self.respawn_food();
             }
-            self.resolve_bites();
-            for c in &mut self.dead {
-                c.age += 1;
-            }
-            self.mature_corpses();
-        }
-    }
-
-    /// Turn the oldest corpse that has reached `CORPSE_LIFETIME_TICKS` into an
-    /// additional food cell. If that cell is covered by a snake, another corpse
-    /// or existing food, the new food is respawned on a free cell instead.
-    fn mature_corpses(&mut self) {
-        let idx = self
-            .dead
-            .iter()
-            .position(|c| c.age >= CORPSE_LIFETIME_TICKS);
-        let Some(idx) = idx else {
-            return;
-        };
-        let corpse = self.dead.remove(idx);
-        let pos = corpse.segment.current;
-        let occupied = self
-            .snakes
-            .iter()
-            .any(|s| s.body.iter().any(|seg| seg.current == pos))
-            || self.dead.iter().any(|c| c.segment.current == pos)
-            || self.food.contains(&pos);
-        if occupied {
-            self.respawn_food();
-        } else {
-            self.food.push(pos);
         }
     }
 
     /// Resolve bites from this tick. Only a head can bite, and only non-head
     /// body cells can be bitten: a head landing on another snake's body cell
-    /// (index >= 1) bites the owner there, keeping `[0..=index]` and shedding
-    /// the tail behind the bite as a static corpse (in the victim's color).
-    /// Head-to-head contact has no effect, and neither does body-to-body
-    /// contact between different snakes. Corpses never bite: a head moving
-    /// onto a corpse cell just passes over it. Each victim is split once, at
-    /// the bite closest to its head.
+    /// (index >= 1) bites the owner there, keeping `[0..index]` and shedding
+    /// the bitten cell plus the tail behind it. Each shed cell immediately
+    /// turns into food. Head-to-head contact has no effect, and neither does
+    /// body-to-body contact between different snakes. Each victim is split
+    /// once, at the bite closest to its head.
     fn resolve_bites(&mut self) {
         let mut splits: Vec<(usize, usize)> = Vec::new();
         for i in 0..self.snakes.len() {
             let head = self.snakes[i].head();
             for j in 0..self.snakes.len() {
+                if j == i {
+                    continue; // a snake cannot bite itself
+                }
                 // Heads (index 0) cannot be bitten, by any snake.
                 let idx = self.snakes[j]
                     .body
@@ -185,14 +143,29 @@ impl Game {
         }
         for (victim, idx) in best.into_iter().enumerate() {
             if let Some(idx) = idx {
-                let color = self.snakes[victim].color();
                 let severed = self.snakes[victim].split_at(idx);
-                self.dead.extend(severed.into_iter().map(|s| Corpse {
-                    segment: s,
-                    color,
-                    age: 0,
-                }));
+                for s in severed {
+                    self.shed_food(s.current);
+                }
             }
+        }
+    }
+
+    /// Turn a cell shed by a bite into food. If the cell is covered by a snake
+    /// or already holds food, the new food is respawned on a free cell instead.
+    fn shed_food(&mut self, pos: Cell) {
+        let occupied = self
+            .snakes
+            .iter()
+            .any(|s| s.body.iter().any(|seg| seg.current == pos))
+            || self.food.contains(&pos);
+
+        if occupied {
+            if self.food.is_empty() {
+                self.respawn_food();
+            }
+        } else {
+            self.food.push(pos);
         }
     }
 
@@ -219,21 +192,13 @@ impl Game {
         }
     }
 
-    /// Draw the board, both snakes, the static corpses and the shared food.
+    /// Draw the board, both snakes and the shared food.
     pub fn draw(&self, r: &mut impl Renderer, alpha: u32) {
         draw_grid(r);
         for s in &self.snakes {
             s.draw(r, alpha);
         }
-        self.draw_corpses(r);
         self.draw_food(r);
-    }
-
-    fn draw_corpses(&self, r: &mut impl Renderer) {
-        for corpse in &self.dead {
-            let (x, y) = Self::cell_screen(corpse.segment.current);
-            r.fill_rect(x, y, CELL, CELL, corpse.color);
-        }
     }
 
     fn draw_food(&self, r: &mut impl Renderer) {
@@ -248,8 +213,8 @@ impl Game {
         (BOARD_X + cell.x * CELL, BOARD_Y + cell.y * CELL)
     }
 
-    /// Add a food cell on a free cell (not under any snake body, corpse or
-    /// existing food).
+    /// Add a food cell on a free cell (not under any snake body or existing
+    /// food).
     fn respawn_food(&mut self) {
         loop {
             let x = self.rng.random_range(0..GRID_SIZE_X);
@@ -259,7 +224,6 @@ impl Game {
                 .snakes
                 .iter()
                 .any(|s| s.body.iter().any(|seg| seg.current == pos))
-                || self.dead.iter().any(|c| c.segment.current == pos)
                 || self.food.contains(&pos);
             if !occupied {
                 self.food.push(pos);
@@ -296,6 +260,65 @@ mod tests {
     }
 
     #[test]
+    fn a_snake_cannot_bite_itself() {
+        let mut game = Game::new(2);
+        // Plant food off-board so neither snake grows during the test.
+        game.food = vec![Cell { x: 100, y: 100 }];
+        // Snake 0 curls so its head lands on its own neck (index 2) after the
+        // move: head (5,5) moving Right onto (6,5), which the shift keeps.
+        game.snakes[0].body = vec![
+            Segment {
+                current: Cell { x: 5, y: 5 },
+                previous: Cell { x: 5, y: 5 },
+            },
+            Segment {
+                current: Cell { x: 6, y: 5 },
+                previous: Cell { x: 6, y: 5 },
+            },
+            Segment {
+                current: Cell { x: 6, y: 6 },
+                previous: Cell { x: 6, y: 6 },
+            },
+            Segment {
+                current: Cell { x: 5, y: 6 },
+                previous: Cell { x: 5, y: 6 },
+            },
+        ];
+        game.snakes[0].direction = Direction::Right;
+        // Snake 1 stays far away (off-board direction, no contact).
+        game.snakes[1].body = vec![
+            Segment {
+                current: Cell { x: 16, y: 10 },
+                previous: Cell { x: 16, y: 10 },
+            },
+            Segment {
+                current: Cell { x: 17, y: 10 },
+                previous: Cell { x: 17, y: 10 },
+            },
+            Segment {
+                current: Cell { x: 18, y: 10 },
+                previous: Cell { x: 18, y: 10 },
+            },
+            Segment {
+                current: Cell { x: 19, y: 10 },
+                previous: Cell { x: 19, y: 10 },
+            },
+        ];
+        game.snakes[1].direction = Direction::Left;
+
+        for _ in 0..TICK_STEPS {
+            game.step();
+        }
+
+        // The head moved onto its own body, but a snake cannot bite itself:
+        // snake 0 keeps all four cells.
+        assert_eq!(game.snakes[0].head(), Cell { x: 6, y: 5 });
+        assert_eq!(game.snakes[0].body.len(), 4);
+        assert_eq!(game.snakes[1].body.len(), 4);
+        assert_eq!(game.foods().len(), 1);
+    }
+
+    #[test]
     fn initial_two_snake_layout() {
         let game = Game::new(2);
         assert_eq!(game.snakes.len(), 2);
@@ -314,7 +337,6 @@ mod tests {
         assert_eq!(game.snakes.len(), 1);
         assert_eq!(head(&game, 0), Cell { x: 3, y: 0 });
     }
-
     #[test]
     fn both_snakes_move_in_lockstep() {
         let mut game = Game::new(2);
@@ -426,106 +448,76 @@ mod tests {
 
         // Snake 0's head moved to (7,5), snake 1's body cell at index 2.
         assert_eq!(game.snakes[0].head(), Cell { x: 7, y: 5 });
-        // Snake 1 keeps [0..=2] (head (9,5) after moving) and sheds the tail.
-        assert_eq!(game.snakes[1].body.len(), 3);
+        // Snake 1 keeps [0..2] (head (9,5) after moving) and sheds the bitten
+        // cell plus the tail behind it.
+        assert_eq!(game.snakes[1].body.len(), 2);
         assert_eq!(game.snakes[1].body[0].current, Cell { x: 9, y: 5 });
-        assert_eq!(game.snakes[1].body[2].current, Cell { x: 7, y: 5 });
-        // The severed tail became a static corpse in the victim's color.
-        assert_eq!(game.dead.len(), 1);
-        assert_eq!(game.dead[0].segment.current, Cell { x: 6, y: 5 });
-        assert_eq!(game.dead[0].segment.current, game.dead[0].segment.previous);
-        assert_eq!(game.dead[0].color, game.snakes[1].color());
-        // The corpse aged once at the end of the tick it was shed.
-        assert_eq!(game.dead[0].age, 1);
+        assert_eq!(game.snakes[1].body[1].current, Cell { x: 8, y: 5 });
+        // The shed cells immediately became extra food. Both are covered by
+        // snake 0 (its head and neck), so the food was respawned on free cells.
+        assert_eq!(game.foods().len(), 3);
+        assert!(game.foods().contains(&Cell { x: 100, y: 100 }));
+        assert!(game.foods().iter().all(|f| {
+            !game
+                .snakes
+                .iter()
+                .any(|s| s.body.iter().any(|seg| seg.current == *f))
+        }));
     }
 
     #[test]
-    fn corpses_do_not_bite() {
+    fn severed_tail_becomes_food_immediately() {
         let mut game = Game::new(2);
         game.food = vec![Cell { x: 100, y: 100 }];
+        // Snake 0 is short; snake 1 is a long straight line. After one tick
+        // snake 0's head lands on snake 1's body at index 4.
         game.snakes[0].body = vec![
             Segment {
-                current: Cell { x: 6, y: 5 },
-                previous: Cell { x: 6, y: 5 },
+                current: Cell { x: 9, y: 5 },
+                previous: Cell { x: 9, y: 5 },
             },
             Segment {
-                current: Cell { x: 5, y: 5 },
-                previous: Cell { x: 5, y: 5 },
-            },
-            Segment {
-                current: Cell { x: 4, y: 5 },
-                previous: Cell { x: 4, y: 5 },
+                current: Cell { x: 8, y: 5 },
+                previous: Cell { x: 8, y: 5 },
             },
         ];
         game.snakes[0].direction = Direction::Right;
-        game.dead.push(Corpse {
-            segment: Segment {
-                current: Cell { x: 7, y: 5 },
-                previous: Cell { x: 7, y: 5 },
-            },
-            color: SNAKE_COLORS[1],
-            age: 0,
-        });
+        game.snakes[1].body = (7..=13)
+            .rev()
+            .map(|x| Segment {
+                current: Cell { x, y: 5 },
+                previous: Cell { x, y: 5 },
+            })
+            .collect();
+        game.snakes[1].direction = Direction::Right;
 
         for _ in 0..TICK_STEPS {
             game.step();
         }
 
-        // The head moved onto the corpse, but the corpse does not bite back.
-        assert_eq!(game.snakes[0].body.len(), 3);
-        assert_eq!(game.snakes[0].head(), Cell { x: 7, y: 5 });
-        assert_eq!(game.dead.len(), 1);
+        // Snake 1 keeps [0..4] and sheds the bitten cell plus the tail.
+        assert_eq!(game.snakes[1].body.len(), 4);
+        assert_eq!(game.snakes[1].head(), Cell { x: 14, y: 5 });
+        // The shed cells immediately become food: each shed cell adds exactly
+        // one food. (10,5) and (9,5) sit under snake 0's head and neck, so they
+        // respawn; (8,5) is free, so it becomes food right there.
+        assert_eq!(game.foods().len(), 4);
+        assert!(game.foods().contains(&Cell { x: 8, y: 5 }));
+        assert!(game.foods().contains(&Cell { x: 100, y: 100 }));
+        assert!(game.foods().iter().all(|f| {
+            !game
+                .snakes
+                .iter()
+                .any(|s| s.body.iter().any(|seg| seg.current == *f))
+        }));
     }
 
     #[test]
-    fn corpses_age_and_turn_into_food() {
+    fn a_bite_shedding_food_does_not_spawn_extra_food() {
         let mut game = Game::new(2);
-        game.food = vec![Cell { x: 100, y: 100 }];
-        game.dead.push(Corpse {
-            segment: Segment {
-                current: Cell { x: 5, y: 5 },
-                previous: Cell { x: 5, y: 5 },
-            },
-            color: SNAKE_COLORS[0],
-            age: CORPSE_LIFETIME_TICKS - 1,
-        });
-
-        // Already one tick shy of the limit: the first step ages it to the
-        // lifetime and turns its cell into an additional food.
-        for _ in 0..TICK_STEPS {
-            game.step();
-        }
-        assert!(game.dead.is_empty());
-        assert_eq!(game.foods().len(), 2);
-        assert!(game.foods().contains(&Cell { x: 5, y: 5 }));
-    }
-
-    #[test]
-    fn corpses_do_not_turn_into_food_early() {
-        let mut game = Game::new(2);
-        game.food = vec![Cell { x: 100, y: 100 }];
-        game.dead.push(Corpse {
-            segment: Segment {
-                current: Cell { x: 5, y: 5 },
-                previous: Cell { x: 5, y: 5 },
-            },
-            color: SNAKE_COLORS[0],
-            age: 0,
-        });
-
-        for _ in 0..TICK_STEPS {
-            game.step();
-        }
-        assert_eq!(game.dead.len(), 1);
-        assert_eq!(game.dead[0].age, 1);
-        assert!(game.foods().iter().all(|f| *f != Cell { x: 5, y: 5 }));
-    }
-
-    #[test]
-    fn matured_corpse_under_a_snake_respawns_food() {
-        let mut game = Game::new(2);
-        game.food = vec![Cell { x: 100, y: 100 }];
-        // Snake 0's head leaves (5,5) but its neck fills it in the same tick.
+        // The only food sits where snake 0's head lands, so the pool empties
+        // in the same tick the bite sheds cells.
+        game.food = vec![Cell { x: 6, y: 5 }];
         game.snakes[0].body = vec![
             Segment {
                 current: Cell { x: 5, y: 5 },
@@ -537,24 +529,32 @@ mod tests {
             },
         ];
         game.snakes[0].direction = Direction::Right;
-        game.dead.push(Corpse {
-            segment: Segment {
-                current: Cell { x: 5, y: 5 },
-                previous: Cell { x: 5, y: 5 },
-            },
-            color: SNAKE_COLORS[1],
-            age: CORPSE_LIFETIME_TICKS - 1,
-        });
+        // Snake 1's post-move body: head (8,5) ... (1,5); index 2 is (6,5).
+        game.snakes[1].body = (0..=7)
+            .rev()
+            .map(|x| Segment {
+                current: Cell { x: x, y: 5 },
+                previous: Cell { x: x, y: 5 },
+            })
+            .collect();
+        game.snakes[1].direction = Direction::Right;
 
         for _ in 0..TICK_STEPS {
             game.step();
         }
 
-        // The corpse cell is now covered by snake 0's body, so the new food
-        // is respawned on a free cell instead.
-        assert!(game.dead.is_empty());
-        assert_eq!(game.foods().len(), 2);
-        assert!(game.foods().iter().all(|f| *f != Cell { x: 5, y: 5 }));
+        // Snake 0 ate the last food and bit snake 1's cell at index 2 in the
+        // same tick. Six cells were shed and each turns into food (respawned
+        // where a snake covers it, or in place). No extra food may spawn just
+        // because the pool emptied in the same tick.
+        assert_eq!(game.snakes[0].head(), Cell { x: 6, y: 5 });
+        assert_eq!(game.snakes[1].body.len(), 2);
+        assert_eq!(game.snakes[1].body[0].current, Cell { x: 8, y: 5 });
+        assert_eq!(game.snakes[1].body[1].current, Cell { x: 7, y: 5 });
+        assert_eq!(game.foods().len(), 6);
+        assert!(game.foods().contains(&Cell { x: 3, y: 5 }));
+        assert!(game.foods().contains(&Cell { x: 2, y: 5 }));
+        assert!(game.foods().contains(&Cell { x: 1, y: 5 }));
         assert!(game.foods().iter().all(|f| {
             !game
                 .snakes
@@ -628,7 +628,7 @@ mod tests {
         assert_eq!(game.snakes[1].head(), Cell { x: 6, y: 5 });
         assert_eq!(game.snakes[0].body.len(), 2);
         assert_eq!(game.snakes[1].body.len(), 2);
-        assert!(game.dead.is_empty());
+        assert_eq!(game.foods().len(), 1);
     }
 
     #[test]
@@ -674,30 +674,7 @@ mod tests {
         assert_eq!(overlap, Some(Cell { x: 5, y: 5 }));
         assert_eq!(game.snakes[0].body.len(), 2);
         assert_eq!(game.snakes[1].body.len(), 5);
-        assert!(game.dead.is_empty());
-    }
-
-    #[test]
-    fn food_respawns_off_corpses() {
-        let mut game = Game::new(2);
-        game.food = vec![Cell { x: 100, y: 100 }];
-        // Scatter a row of corpses across the top of the board.
-        for x in 0..GRID_SIZE_X {
-            game.dead.push(Corpse {
-                segment: Segment {
-                    current: Cell { x, y: 0 },
-                    previous: Cell { x, y: 0 },
-                },
-                color: SNAKE_COLORS[0],
-                age: 0,
-            });
-        }
-        for _ in 0..200 {
-            game.food.clear();
-            game.respawn_food();
-            let last = game.food.last().unwrap();
-            assert!(!game.dead.iter().any(|c| c.segment.current == *last));
-        }
+        assert_eq!(game.foods().len(), 1);
     }
 
     #[test]

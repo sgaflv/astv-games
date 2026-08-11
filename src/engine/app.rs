@@ -232,9 +232,9 @@ impl Stage {
             Input::Up | Input::Down | Input::Left | Input::Right => {
                 self.selection = 1 - self.selection
             }
-            Input::Confirm => self.start_game(self.selection + 1),
+            Input::Confirm | Input::GameA | Input::GameB => self.start_game(self.selection + 1),
             Input::Back => miniquad::window::request_quit(),
-            Input::Pause | Input::GameA | Input::GameB | Input::GameX | Input::GameY => {}
+            Input::Pause | Input::GameX | Input::GameY => {}
         }
     }
 

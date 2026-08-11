@@ -242,13 +242,15 @@ impl Snake {
     }
 
     /// Split the snake at body index `index` (the cell that was bitten). The
-    /// head part `[0..=index]` keeps moving; the detached tail `[index+1..]`
-    /// is returned with its segments snapped static (they no longer move).
-    /// An out-of-range index clamps to the last cell and severs nothing.
+    /// bitten cell and everything behind it are severed; the head part
+    /// `[0..index]` keeps moving. The severed cells are returned snapped
+    /// static (they no longer move) so the game can turn them into food.
+    /// The head always survives: a bite on the head (index 0) severs everything
+    /// except the head, and an out-of-range index severs nothing.
     pub fn split_at(&mut self, index: usize) -> Vec<Segment> {
-        let index = index.min(self.body.len() - 1);
+        let index = index.max(1).min(self.body.len());
         self.body
-            .drain(index + 1..)
+            .drain(index..)
             .map(|s| Segment {
                 current: s.current,
                 previous: s.current,
@@ -483,21 +485,22 @@ mod tests {
     }
 
     #[test]
-    fn split_at_severs_the_tail_after_the_bitten_cell() {
+    fn split_at_severs_the_bitten_cell_and_the_tail_behind_it() {
         let mut snake = snake();
-        // Grow to 5 cells: (4,0),(3,0),(2,0),(1,0),(1,0).
+        // Grow to 5 cells: (4,0),(3,0),(2,0),(1,0),(0,0).
         snake.move_tick(&[Cell { x: 4, y: 0 }]);
         assert_eq!(snake.body.len(), 5);
-        // Bite the cell at index 2: keep [0..=2], sever the two cells behind it.
+        // Bite the cell at index 2: keep [0..2], sever the bitten cell and the
+        // two cells behind it.
         let severed = snake.split_at(2);
-        assert_eq!(snake.body.len(), 3);
+        assert_eq!(snake.body.len(), 2);
         assert_eq!(snake.head(), Cell { x: 4, y: 0 });
-        assert_eq!(severed.len(), 2);
+        assert_eq!(severed.len(), 3);
         // Severed segments are snapped static (no interpolation).
         for s in &severed {
             assert_eq!(s.current, s.previous);
         }
-        assert_eq!(severed[0].current, Cell { x: 1, y: 0 });
+        assert_eq!(severed[0].current, Cell { x: 2, y: 0 });
     }
 
     #[test]
