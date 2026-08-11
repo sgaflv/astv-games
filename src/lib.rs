@@ -33,5 +33,5 @@ pub fn desktop_main() {
 #[cfg(target_os = "android")]
 #[unsafe(no_mangle)]
 pub extern "C" fn quad_main() {
-    miniquad::start(conf(), || Box::new(app::Stage::new()));
+    miniquad::start(conf(), || Box::new(engine::app::Stage::new()));
 }

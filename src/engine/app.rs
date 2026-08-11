@@ -37,9 +37,16 @@ enum Input {
     Confirm,
     Back,
     Pause,
+    // Gamepad face buttons. On Android they arrive as F1-F4 (the Java glue
+    // remaps KEYCODE_BUTTON_* because miniquad 0.4.11 cannot tell them apart);
+    // F1-F4 on a desktop keyboard trigger the same inputs for easy testing.
+    GameA,
+    GameB,
+    GameX,
+    GameY,
 }
 
-const INPUT_COUNT: usize = 7;
+const INPUT_COUNT: usize = 11;
 
 const fn input_index(input: Input) -> usize {
     match input {
@@ -50,6 +57,10 @@ const fn input_index(input: Input) -> usize {
         Input::Confirm => 4,
         Input::Back => 5,
         Input::Pause => 6,
+        Input::GameA => 7,
+        Input::GameB => 8,
+        Input::GameX => 9,
+        Input::GameY => 10,
     }
 }
 
@@ -63,6 +74,10 @@ impl Input {
             KeyCode::Enter => Some(Input::Confirm),
             KeyCode::Escape | KeyCode::Back => Some(Input::Back),
             KeyCode::Space | KeyCode::Menu => Some(Input::Pause),
+            KeyCode::F1 => Some(Input::GameA),
+            KeyCode::F2 => Some(Input::GameB),
+            KeyCode::F3 => Some(Input::GameX),
+            KeyCode::F4 => Some(Input::GameY),
             _ => None,
         }
     }
@@ -146,6 +161,8 @@ impl Stage {
 
         //self.framebuffer.clear(game::bg_color());
         self.framebuffer.zero();
+
+        // draw game state
         self.game.draw(&mut self.framebuffer, alpha);
 
         if self.hud_dirty {
@@ -187,6 +204,11 @@ impl EventHandler for Stage {
             self.pause_requested = false;
             self.paused = !self.paused;
         }
+
+        // Placeholder gamepad face-button actions (while held). A hides the
+        // tongue, B closes the eyes; X/Y are reserved for later use.
+        self.game.tongue_hidden = self.held[input_index(Input::GameA)];
+        self.game.eyes_closed = self.held[input_index(Input::GameB)];
 
         // Fixed-timestep simulation.
         if !self.paused {
@@ -248,6 +270,8 @@ impl EventHandler for Stage {
             Input::Confirm => {}
             Input::Back => miniquad::window::request_quit(),
             Input::Pause => self.pause_requested = true,
+            // Gamepad face buttons are held-state only for now.
+            Input::GameA | Input::GameB | Input::GameX | Input::GameY => {}
         }
     }
 

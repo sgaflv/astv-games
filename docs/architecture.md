@@ -42,7 +42,8 @@ physical display (1920×1080 ×4, 3840×2160 ×8, or letterboxed)
 
 * Fixed simulation step: 60 Hz (`SIM_STEP_HZ`), snake moves every 0.5 s
   (`TICK_STEPS = 30` steps per move).
-* Board: `GRID_SIZE = 20` cells (coords -10..=9), edges wrap.
+* Board: `GRID_SIZE_X = 40` x `GRID_SIZE_Y = 12` cells, 0-based coords
+  (`x` in 0..40, `y` in 0..12, top-left origin), edges wrap.
 * Direction changes are buffered in a small ring buffer
   (`MAX_QUEUED_INPUTS = 3`); repeats and reversals are rejected.
 * Movement is interpolated between ticks using fixed-point `alpha`

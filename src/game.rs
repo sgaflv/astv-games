@@ -8,20 +8,23 @@ use rand::rngs::ThreadRng;
 pub const SIM_STEP_HZ: u32 = 60;
 
 /// Seconds between snake move ticks.
-pub const MOVE_INTERVAL: f64 = 0.2;
+pub const MOVE_INTERVAL: f64 = 0.5;
 
 /// Number of fixed simulation steps per move tick (0.5 s * 60 Hz).
 pub const TICK_STEPS: u32 = (MOVE_INTERVAL * SIM_STEP_HZ as f64) as u32;
 
 /// The board is GRID_SIZE x GRID_SIZE cells.
-pub const GRID_SIZE: i32 = 20;
-pub const HALF_GRID: i32 = GRID_SIZE / 2;
+pub const GRID_SIZE_X: i32 = 20;
+pub const GRID_SIZE_Y: i32 = 11;
 
 /// Logical layout (480 x 270), top-left origin.
-pub const CELL: i32 = 12;
-pub const BOARD_PX: i32 = GRID_SIZE * CELL;
-pub const HUD_H: i32 = 30;
-pub const BOARD_X: i32 = (480 - BOARD_PX) / 2;
+pub const CELL: i32 = 24;
+
+pub const BOARD_PX: i32 = GRID_SIZE_X * CELL;
+pub const BOARD_PY: i32 = GRID_SIZE_Y * CELL;
+
+pub const HUD_H: i32 = 3;
+pub const BOARD_X: i32 = 0;
 pub const BOARD_Y: i32 = HUD_H;
 
 /// Maximum number of direction changes queued between ticks.
@@ -89,6 +92,11 @@ pub struct Snake {
     queue_len: usize,
     queue_read: usize,
     pub grew_last_tick: bool,
+    // Placeholder face expressions driven by the gamepad (see engine::app).
+    /// When true, the tongue is not drawn (gamepad A held).
+    pub tongue_hidden: bool,
+    /// When true, the eyes are not drawn (gamepad B held; blink placeholder).
+    pub eyes_closed: bool,
 }
 
 impl Default for Snake {
@@ -119,6 +127,8 @@ impl Snake {
             queue_len: 0,
             queue_read: 0,
             grew_last_tick: false,
+            tongue_hidden: false,
+            eyes_closed: false,
         };
         snake.respawn_food();
         snake
@@ -192,23 +202,23 @@ impl Snake {
 
         let mut head = self.body[0].current;
         match self.direction {
-            Direction::Up => head.y += 1,
-            Direction::Down => head.y -= 1,
+            Direction::Up => head.y -= 1,
+            Direction::Down => head.y += 1,
             Direction::Left => head.x -= 1,
             Direction::Right => head.x += 1,
         }
 
-        if head.x >= HALF_GRID {
-            head.x = -HALF_GRID;
+        if head.x >= GRID_SIZE_X {
+            head.x = 0;
         }
-        if head.x < -HALF_GRID {
-            head.x = HALF_GRID - 1;
+        if head.x < 0 {
+            head.x = GRID_SIZE_X - 1;
         }
-        if head.y >= HALF_GRID {
-            head.y = -HALF_GRID;
+        if head.y >= GRID_SIZE_Y {
+            head.y = 0;
         }
-        if head.y < -HALF_GRID {
-            head.y = HALF_GRID - 1;
+        if head.y < 0 {
+            head.y = GRID_SIZE_Y - 1;
         }
 
         self.grew_last_tick = false;
@@ -262,8 +272,8 @@ impl Snake {
 
     fn respawn_food(&mut self) {
         loop {
-            let x = self.rng.random_range(-HALF_GRID..HALF_GRID);
-            let y = self.rng.random_range(-HALF_GRID..HALF_GRID);
+            let x = self.rng.random_range(0..GRID_SIZE_X);
+            let y = self.rng.random_range(0..GRID_SIZE_Y);
             let pos = Cell { x, y };
             let occupied = self.body.iter().any(|s| s.current == pos);
             if !occupied {
@@ -275,16 +285,12 @@ impl Snake {
 
     /// Screen pixel position of a cell's top-left corner (top-left origin).
     fn cell_screen(cell: Cell) -> (i32, i32) {
-        (
-            BOARD_X + (cell.x + HALF_GRID) * CELL,
-            BOARD_Y + (HALF_GRID - 1 - cell.y) * CELL,
-        )
+        (BOARD_X + cell.x * CELL, BOARD_Y + cell.y * CELL)
     }
 
     /// Draw the board, snake and food into a logical-coordinate renderer.
     pub fn draw(&self, r: &mut impl Renderer, alpha: u32) {
         draw_grid(r);
-        draw_border(r);
         self.draw_snake(r, alpha);
         self.draw_food(r);
     }
@@ -294,7 +300,14 @@ impl Snake {
             let (x, y) = segment_screen(*segment, alpha);
             r.fill_rect(x, y, CELL, CELL, SNAKE_COLOR);
             if i == 0 {
-                draw_head_details(r, *segment, self.direction, alpha);
+                draw_head_details(
+                    r,
+                    *segment,
+                    self.direction,
+                    alpha,
+                    self.tongue_hidden,
+                    self.eyes_closed,
+                );
             }
         }
     }
@@ -324,40 +337,37 @@ fn interp(a: i32, b: i32, alpha: u32) -> i32 {
 // Palette (matches the original Bevy rendering as closely as practical).
 const BG_COLOR: Color = Color::rgb(13, 13, 18);
 const GRID_COLOR: Color = Color::rgb(38, 38, 46);
-const BORDER_COLOR: Color = Color::rgb(255, 255, 255);
 const SNAKE_COLOR: Color = Color::rgb(51, 204, 51);
 const EYE_COLOR: Color = Color::rgb(13, 13, 13);
 const TONGUE_COLOR: Color = Color::rgb(230, 77, 77);
 const FOOD_COLOR: Color = Color::rgb(230, 26, 26);
 
-const BORDER_THICKNESS: i32 = 2;
 const FOOD_RADIUS: i32 = 5;
 
 /// 1px dark grid lines between the cells, drawn behind the snake so the snake
 /// covers them as it passes (same layering as the original).
 fn draw_grid(r: &mut impl Renderer) {
-    for i in 1..GRID_SIZE {
+    for i in 1..GRID_SIZE_X {
         let x = BOARD_X + i * CELL;
-        r.fill_rect(x, BOARD_Y, 1, BOARD_PX, GRID_COLOR);
+        r.fill_rect(x, BOARD_Y, 1, BOARD_PY, GRID_COLOR);
+    }
+
+    for i in 1..GRID_SIZE_Y {
         let y = BOARD_Y + i * CELL;
         r.fill_rect(BOARD_X, y, BOARD_PX, 1, GRID_COLOR);
     }
 }
 
-fn draw_border(r: &mut impl Renderer) {
-    let t = BORDER_THICKNESS;
-    let size = BOARD_PX + 2 * t;
-    let x = BOARD_X - t;
-    let y = BOARD_Y - t;
-    r.fill_rect(x, y, size, t, BORDER_COLOR);
-    r.fill_rect(x, y + size - t, size, t, BORDER_COLOR);
-    r.fill_rect(x, y, t, size, BORDER_COLOR);
-    r.fill_rect(x + size - t, y, t, size, BORDER_COLOR);
-}
-
 /// Eyes and forked tongue on the interpolated head, pointing along the move
 /// direction. Everything is integer pixel arithmetic.
-fn draw_head_details(r: &mut impl Renderer, segment: Segment, direction: Direction, alpha: u32) {
+fn draw_head_details(
+    r: &mut impl Renderer,
+    segment: Segment,
+    direction: Direction,
+    alpha: u32,
+    tongue_hidden: bool,
+    eyes_closed: bool,
+) {
     let (hx, hy) = segment_screen(segment, alpha);
     let (cx, cy) = (hx + CELL / 2, hy + CELL / 2);
     let (dx, dy) = direction.screen_vec();
@@ -366,19 +376,25 @@ fn draw_head_details(r: &mut impl Renderer, segment: Segment, direction: Directi
     // Perpendicular unit vector in screen space.
     let (px, py) = (-dy, dx);
 
-    // Eyes: 2x2 dark squares near the front corners.
-    for sign in [-1, 1] {
-        let ex = fx + px * sign * 3 - dx * 2;
-        let ey = fy + py * sign * 3 - dy * 2;
-        r.fill_rect(ex - 1, ey - 1, 2, 2, EYE_COLOR);
+    // Eyes: 2x2 dark squares near the front corners. Skipped while blinking
+    // (gamepad B held).
+    if !eyes_closed {
+        for sign in [-1, 1] {
+            let ex = fx + px * sign * 3 - dx * 2;
+            let ey = fy + py * sign * 3 - dy * 2;
+            r.fill_rect(ex - 1, ey - 1, 2, 2, EYE_COLOR);
+        }
     }
 
     // Forked tongue: two 1px prongs diverging from the front of the mouth.
-    for sign in [-1, 1] {
-        for len in 1..=3 {
-            let tx = fx + dx * len + px * sign * len;
-            let ty = fy + dy * len + py * sign * len;
-            r.fill_rect(tx, ty, 1, 1, TONGUE_COLOR);
+    // Hidden while gamepad A is held.
+    if !tongue_hidden {
+        for sign in [-1, 1] {
+            for len in 1..=3 {
+                let tx = fx + dx * len + px * sign * len;
+                let ty = fy + dy * len + py * sign * len;
+                r.fill_rect(tx, ty, 1, 1, TONGUE_COLOR);
+            }
         }
     }
 }
@@ -390,6 +406,7 @@ pub const fn bg_color() -> Color {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::engine::render::Framebuffer;
 
     fn head(snake: &Snake) -> Cell {
         snake.body[0].current
@@ -425,23 +442,23 @@ mod tests {
     #[test]
     fn wraps_at_board_edge() {
         let mut snake = Snake::new();
-        // Head starts at x = 3, moving right. The rightmost cell is x = 9; the
-        // 7th tick moves past the edge and wraps to x = -10.
-        for _ in 0..(TICK_STEPS * 7) {
+        // Head starts at x = 3, moving right. The rightmost cell is x = 39; the
+        // 37th tick moves past the edge and wraps to x = 0.
+        for _ in 0..(TICK_STEPS * 37) {
             snake.step();
         }
-        assert_eq!(head(&snake), Cell { x: -10, y: 0 });
+        assert_eq!(head(&snake), Cell { x: 0, y: 0 });
     }
 
     #[test]
     fn queues_turns_between_ticks() {
         let mut snake = Snake::new();
-        snake.queue_direction(Direction::Up);
+        snake.queue_direction(Direction::Down);
         snake.queue_direction(Direction::Left);
         for _ in 0..TICK_STEPS {
             snake.step();
         }
-        // First tick applies Up, moving from (3, 0) to (3, 1).
+        // First tick applies Down, moving from (3, 0) to (3, 1).
         assert_eq!(head(&snake), Cell { x: 3, y: 1 });
         for _ in 0..TICK_STEPS {
             snake.step();
@@ -455,7 +472,7 @@ mod tests {
         let mut snake = Snake::new();
         snake.queue_direction(Direction::Right); // repeat, ignored
         snake.queue_direction(Direction::Left); // reversal, ignored
-        snake.queue_direction(Direction::Up);
+        snake.queue_direction(Direction::Down);
         for _ in 0..TICK_STEPS {
             snake.step();
         }
@@ -480,7 +497,7 @@ mod tests {
                 } else {
                     Direction::Left
                 }
-            } else if fy > h.y {
+            } else if fy < h.y {
                 Direction::Up
             } else {
                 Direction::Down
@@ -544,5 +561,46 @@ mod tests {
         // Both anchors are on the board, not at the window origin.
         assert!(x0 >= BOARD_X && x1 >= BOARD_X);
         assert!(y0 >= BOARD_Y && y1 >= BOARD_Y);
+    }
+
+    fn draw_head_pixels(snake: &Snake) -> Vec<[u8; 3]> {
+        let mut fb = Framebuffer::new();
+        fb.zero();
+        snake.draw(&mut fb, 65536);
+        fb.pixels()
+            .chunks_exact(3)
+            .map(|p| [p[0], p[1], p[2]])
+            .collect()
+    }
+
+    fn has_pixel(pixels: &[[u8; 3]], color: Color) -> bool {
+        pixels
+            .iter()
+            .any(|p| p[0] == color.r && p[1] == color.g && p[2] == color.b)
+    }
+
+    #[test]
+    fn face_details_are_drawn_by_default() {
+        let pixels = draw_head_pixels(&Snake::new());
+        assert!(has_pixel(&pixels, EYE_COLOR));
+        assert!(has_pixel(&pixels, TONGUE_COLOR));
+    }
+
+    #[test]
+    fn hiding_tongue_skips_only_the_tongue() {
+        let mut snake = Snake::new();
+        snake.tongue_hidden = true;
+        let pixels = draw_head_pixels(&snake);
+        assert!(!has_pixel(&pixels, TONGUE_COLOR));
+        assert!(has_pixel(&pixels, EYE_COLOR));
+    }
+
+    #[test]
+    fn closing_eyes_skips_only_the_eyes() {
+        let mut snake = Snake::new();
+        snake.eyes_closed = true;
+        let pixels = draw_head_pixels(&snake);
+        assert!(!has_pixel(&pixels, EYE_COLOR));
+        assert!(has_pixel(&pixels, TONGUE_COLOR));
     }
 }

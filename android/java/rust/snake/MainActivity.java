@@ -144,12 +144,26 @@ class QuadSurface
     @SuppressWarnings("deprecation")
     @Override
     public boolean onKey(View v, int keyCode, KeyEvent event) {
-        if (event.getAction() == KeyEvent.ACTION_DOWN && keyCode != 0) {
-            QuadNative.surfaceOnKeyDown(keyCode);
+        // Android reports gamepad face buttons as KEYCODE_BUTTON_A/B/X/Y
+        // (96/97/99/100), which miniquad 0.4.11 collapses into KeyCode::Unknown.
+        // Remap them onto the unused F1-F4 keycodes so the game sees distinct
+        // keys (A->F1, B->F2, X->F3, Y->F4). Placeholder: only A and B are used
+        // so far; X/Y are preserved for later.
+        int code = keyCode;
+        switch (keyCode) {
+        case KeyEvent.KEYCODE_BUTTON_A: code = KeyEvent.KEYCODE_F1; break;
+        case KeyEvent.KEYCODE_BUTTON_B: code = KeyEvent.KEYCODE_F2; break;
+        case KeyEvent.KEYCODE_BUTTON_X: code = KeyEvent.KEYCODE_F3; break;
+        case KeyEvent.KEYCODE_BUTTON_Y: code = KeyEvent.KEYCODE_F4; break;
+        default: break;
         }
 
-        if (event.getAction() == KeyEvent.ACTION_UP && keyCode != 0) {
-            QuadNative.surfaceOnKeyUp(keyCode);
+        if (event.getAction() == KeyEvent.ACTION_DOWN && code != 0) {
+            QuadNative.surfaceOnKeyDown(code);
+        }
+
+        if (event.getAction() == KeyEvent.ACTION_UP && code != 0) {
+            QuadNative.surfaceOnKeyUp(code);
         }
 
         if (event.getAction() == KeyEvent.ACTION_UP || event.getAction() == KeyEvent.ACTION_MULTIPLE) {
