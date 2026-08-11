@@ -1,5 +1,7 @@
 pub mod engine;
 pub mod game;
+pub mod input;
+pub mod snake;
 
 /// Local desktop window size. Independent of the 480x270 logical resolution;
 /// on a 16:9 display it maps to an integer scale (960x540 -> x2).
@@ -33,5 +35,6 @@ pub fn desktop_main() {
 #[cfg(target_os = "android")]
 #[unsafe(no_mangle)]
 pub extern "C" fn quad_main() {
+    input::init();
     miniquad::start(conf(), || Box::new(engine::app::Stage::new()));
 }

@@ -17,6 +17,7 @@ import android.view.SurfaceView;
 import android.view.SurfaceHolder;
 import android.view.MotionEvent;
 import android.view.KeyEvent;
+import android.view.InputDevice;
 import android.view.inputmethod.InputMethodManager;
 
 import android.content.Context;
@@ -30,6 +31,9 @@ import android.graphics.Insets;
 import android.view.inputmethod.InputConnection;
 import android.view.inputmethod.EditorInfo;
 import android.widget.LinearLayout;
+
+import java.util.HashMap;
+import java.util.Map;
 
 import quad_native.QuadNative;
 
@@ -138,17 +142,59 @@ class QuadSurface
         return true;
     }
 
+    // Gamepad -> player slot assignment. The first gamepad (device with an
+    // analog joystick) is player 0 (snake 1), the second is player 1 (snake 2);
+    // any extra gamepads share player 1. Non-gamepad devices (TV remote,
+    // keyboard) return -1 and keep using the legacy miniquad key path.
+    private final Map<Integer, Integer> devicePlayers = new HashMap<Integer, Integer>();
+    private int nextPlayer = 0;
+
+    private int playerForDevice(int deviceId) {
+        Integer assigned = devicePlayers.get(deviceId);
+        if (assigned != null) {
+            return assigned;
+        }
+        InputDevice device = InputDevice.getDevice(deviceId);
+        boolean isGamepad = device != null
+            && (device.getSources() & InputDevice.SOURCE_JOYSTICK) != 0;
+        if (!isGamepad) {
+            return -1;
+        }
+        int player = Math.min(nextPlayer, 1);
+        devicePlayers.put(deviceId, player);
+        if (nextPlayer < 1) {
+            nextPlayer++;
+        }
+        return player;
+    }
+
     // docs says getCharacters are deprecated
     // but somehow on non-latyn input all keyCode and all the relevant fields in the KeyEvent are zeros
     // and only getCharacters has some usefull data
     @SuppressWarnings("deprecation")
     @Override
     public boolean onKey(View v, int keyCode, KeyEvent event) {
-        // Android reports gamepad face buttons as KEYCODE_BUTTON_A/B/X/Y
-        // (96/97/99/100), which miniquad 0.4.11 collapses into KeyCode::Unknown.
-        // Remap them onto the unused F1-F4 keycodes so the game sees distinct
-        // keys (A->F1, B->F2, X->F3, Y->F4). Placeholder: only A and B are used
-        // so far; X/Y are preserved for later.
+        int player = playerForDevice(event.getDeviceId());
+        int action = event.getAction();
+
+        if (player >= 0) {
+            // Gamepad device: route by player slot through the device-aware
+            // native path. The Rust side translates the raw keycode itself, so
+            // the F1-F4 remap below is not needed for gamepads.
+            if (action == KeyEvent.ACTION_DOWN) {
+                QuadNative.surfaceOnPlayerKey(player, keyCode, 1);
+            } else if (action == KeyEvent.ACTION_UP) {
+                QuadNative.surfaceOnPlayerKey(player, keyCode, 0);
+            }
+            return true;
+        }
+
+        // Non-gamepad device (TV remote / keyboard): existing miniquad key
+        // path, which controls player 0. Android reports gamepad face buttons
+        // as KEYCODE_BUTTON_A/B/X/Y (96/97/99/100), which miniquad 0.4.11
+        // collapses into KeyCode::Unknown. Remap them onto the unused F1-F4
+        // keycodes so the game sees distinct keys (A->F1, B->F2, X->F3, Y->F4).
+        // Placeholder: only A and B are used so far; X/Y are preserved for later.
         int code = keyCode;
         switch (keyCode) {
         case KeyEvent.KEYCODE_BUTTON_A: code = KeyEvent.KEYCODE_F1; break;

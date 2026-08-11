@@ -1,6 +1,6 @@
 use crate::engine::present::Presenter;
 use crate::engine::render::{Color, Framebuffer, Renderer};
-use crate::game::{self, Direction, Snake};
+use crate::game::{self, Direction, Game, PLAYERS};
 
 use miniquad::{EventHandler, KeyCode, KeyMods};
 
@@ -37,9 +37,11 @@ enum Input {
     Confirm,
     Back,
     Pause,
-    // Gamepad face buttons. On Android they arrive as F1-F4 (the Java glue
-    // remaps KEYCODE_BUTTON_* because miniquad 0.4.11 cannot tell them apart);
-    // F1-F4 on a desktop keyboard trigger the same inputs for easy testing.
+    // Gamepad face buttons. On Android, gamepads bypass miniquad's key path
+    // entirely (device-aware `surfaceOnPlayerKey`, see input.rs); for other
+    // devices the Java glue remaps KEYCODE_BUTTON_* to F1-F4 because miniquad
+    // 0.4.11 cannot tell them apart. F1-F8 on a desktop keyboard trigger the
+    // same inputs for easy testing.
     GameA,
     GameB,
     GameX,
@@ -65,26 +67,66 @@ const fn input_index(input: Input) -> usize {
 }
 
 impl Input {
-    fn from_keycode(key: KeyCode) -> Option<Input> {
-        match key {
-            KeyCode::Up | KeyCode::W => Some(Input::Up),
-            KeyCode::Down | KeyCode::S => Some(Input::Down),
-            KeyCode::Left | KeyCode::A => Some(Input::Left),
-            KeyCode::Right | KeyCode::D => Some(Input::Right),
-            KeyCode::Enter => Some(Input::Confirm),
-            KeyCode::Escape | KeyCode::Back => Some(Input::Back),
-            KeyCode::Space | KeyCode::Menu => Some(Input::Pause),
-            KeyCode::F1 => Some(Input::GameA),
-            KeyCode::F2 => Some(Input::GameB),
-            KeyCode::F3 => Some(Input::GameX),
-            KeyCode::F4 => Some(Input::GameY),
-            _ => None,
-        }
+    /// Map a desktop key to a (player, input) pair. Player 1 uses arrows/WASD
+    /// and F1-F4, player 2 uses IJKL and F5-F8. Global actions (pause/back)
+    /// use player 0; their player index is irrelevant.
+    fn from_keycode(key: KeyCode) -> Option<(usize, Input)> {
+        use KeyCode::*;
+        let input = match key {
+            Up | W => Input::Up,
+            Down | S => Input::Down,
+            Left | A => Input::Left,
+            Right | D => Input::Right,
+            I => Input::Up,
+            K => Input::Down,
+            J => Input::Left,
+            L => Input::Right,
+            Enter => Input::Confirm,
+            Escape | Back => Input::Back,
+            Space | Menu => Input::Pause,
+            F1 => Input::GameA,
+            F2 => Input::GameB,
+            F3 => Input::GameX,
+            F4 => Input::GameY,
+            F5 => Input::GameA,
+            F6 => Input::GameB,
+            F7 => Input::GameX,
+            F8 => Input::GameY,
+            _ => return None,
+        };
+        let player = match key {
+            I | K | J | L | F5 | F6 | F7 | F8 => 1,
+            _ => 0,
+        };
+        Some((player, input))
+    }
+}
+
+/// Raw Android keycode -> game input. Used by the device-aware gamepad path
+/// (`surfaceOnPlayerKey`), which bypasses miniquad's keycode translation.
+/// Values are the android.view.KeyEvent constants.
+#[cfg(target_os = "android")]
+fn android_keycode_to_input(keycode: i32) -> Option<Input> {
+    match keycode {
+        19 => Some(Input::Up),      // KEYCODE_DPAD_UP
+        20 => Some(Input::Down),    // KEYCODE_DPAD_DOWN
+        21 => Some(Input::Left),    // KEYCODE_DPAD_LEFT
+        22 => Some(Input::Right),   // KEYCODE_DPAD_RIGHT
+        66 => Some(Input::Confirm), // KEYCODE_ENTER
+        4 => Some(Input::Back),     // KEYCODE_BACK
+        111 => Some(Input::Back),   // KEYCODE_ESCAPE
+        82 => Some(Input::Pause),   // KEYCODE_MENU
+        62 => Some(Input::Pause),   // KEYCODE_SPACE
+        96 => Some(Input::GameA),   // KEYCODE_BUTTON_A
+        97 => Some(Input::GameB),   // KEYCODE_BUTTON_B
+        99 => Some(Input::GameX),   // KEYCODE_BUTTON_X
+        100 => Some(Input::GameY),  // KEYCODE_BUTTON_Y
+        _ => None,
     }
 }
 
 pub struct Stage {
-    game: Snake,
+    game: Game,
     framebuffer: Framebuffer,
     presenter: Presenter,
 
@@ -101,8 +143,10 @@ pub struct Stage {
     render_us: f64,
     stat_accum: f64,
 
-    // Input (edge detection via held state; Android auto-repeat is ignored).
-    held: [bool; INPUT_COUNT],
+    // Input (edge detection via per-player held state; Android auto-repeat is
+    // ignored). Gamepad device assignment happens in the Java glue: the first
+    // gamepad is player 0, the second player 1.
+    held: [[bool; INPUT_COUNT]; PLAYERS],
     pause_requested: bool,
     paused: bool,
 
@@ -117,7 +161,7 @@ impl Stage {
     pub fn new() -> Stage {
         let now = miniquad::date::now();
         Stage {
-            game: Snake::new(),
+            game: Game::new(),
             framebuffer: Framebuffer::new(),
             presenter: Presenter::new(),
             frame_start: now,
@@ -129,7 +173,7 @@ impl Stage {
             render_time_frames: 0,
             render_us: 0.0,
             stat_accum: 0.0,
-            held: [false; INPUT_COUNT],
+            held: [[false; INPUT_COUNT]; PLAYERS],
             pause_requested: false,
             paused: false,
             hud_buffer: String::with_capacity(128),
@@ -137,6 +181,40 @@ impl Stage {
             window_w: 0,
             window_h: 0,
         }
+    }
+
+    /// Route one input edge (down or up) to the given player's snake.
+    fn apply_input(&mut self, player: usize, input: Input, down: bool) {
+        let idx = input_index(input);
+        if down {
+            if self.held[player][idx] {
+                return; // ignore Android key auto-repeat
+            }
+            self.held[player][idx] = true;
+            match input {
+                Input::Up => self.game.queue_direction(player, Direction::Up),
+                Input::Down => self.game.queue_direction(player, Direction::Down),
+                Input::Left => self.game.queue_direction(player, Direction::Left),
+                Input::Right => self.game.queue_direction(player, Direction::Right),
+                Input::Confirm => {}
+                Input::Back => miniquad::window::request_quit(),
+                Input::Pause => self.pause_requested = true,
+                // Gamepad face buttons are held-state only for now.
+                Input::GameA | Input::GameB | Input::GameX | Input::GameY => {}
+            }
+        } else {
+            self.held[player][idx] = false;
+        }
+    }
+
+    /// Drain device-aware gamepad events (Android). No-op on desktop.
+    #[cfg(target_os = "android")]
+    fn drain_player_input(&mut self) {
+        crate::input::drain_into(|event| {
+            if let Some(input) = android_keycode_to_input(event.keycode) {
+                self.apply_input(event.player, input, event.down);
+            }
+        });
     }
 
     fn refresh_hud(&mut self) {
@@ -186,6 +264,12 @@ impl Stage {
     }
 }
 
+impl Default for Stage {
+    fn default() -> Stage {
+        Stage::new()
+    }
+}
+
 impl EventHandler for Stage {
     fn update(&mut self) {
         // Pace at TARGET_FPS: sleep until the start of the next frame slot.
@@ -205,10 +289,17 @@ impl EventHandler for Stage {
             self.paused = !self.paused;
         }
 
+        // Device-aware gamepad input (Android); the Java glue assigned each
+        // gamepad a player slot. No-op on desktop.
+        #[cfg(target_os = "android")]
+        self.drain_player_input();
+
         // Placeholder gamepad face-button actions (while held). A hides the
         // tongue, B closes the eyes; X/Y are reserved for later use.
-        self.game.tongue_hidden = self.held[input_index(Input::GameA)];
-        self.game.eyes_closed = self.held[input_index(Input::GameB)];
+        for (p, snake) in self.game.snakes.iter_mut().enumerate() {
+            snake.tongue_hidden = self.held[p][input_index(Input::GameA)];
+            snake.eyes_closed = self.held[p][input_index(Input::GameB)];
+        }
 
         // Fixed-timestep simulation.
         if !self.paused {
@@ -254,30 +345,14 @@ impl EventHandler for Stage {
     }
 
     fn key_down_event(&mut self, keycode: KeyCode, _keymods: KeyMods, _repeat: bool) {
-        let Some(input) = Input::from_keycode(keycode) else {
-            return;
-        };
-        let idx = input_index(input);
-        if self.held[idx] {
-            return; // ignore Android key auto-repeat
-        }
-        self.held[idx] = true;
-        match input {
-            Input::Up => self.game.queue_direction(Direction::Up),
-            Input::Down => self.game.queue_direction(Direction::Down),
-            Input::Left => self.game.queue_direction(Direction::Left),
-            Input::Right => self.game.queue_direction(Direction::Right),
-            Input::Confirm => {}
-            Input::Back => miniquad::window::request_quit(),
-            Input::Pause => self.pause_requested = true,
-            // Gamepad face buttons are held-state only for now.
-            Input::GameA | Input::GameB | Input::GameX | Input::GameY => {}
+        if let Some((player, input)) = Input::from_keycode(keycode) {
+            self.apply_input(player, input, true);
         }
     }
 
     fn key_up_event(&mut self, keycode: KeyCode, _keymods: KeyMods) {
-        if let Some(input) = Input::from_keycode(keycode) {
-            self.held[input_index(input)] = false;
+        if let Some((player, input)) = Input::from_keycode(keycode) {
+            self.apply_input(player, input, false);
         }
     }
 
