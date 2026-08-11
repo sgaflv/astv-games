@@ -29,6 +29,7 @@ impl Color {
 /// pixels in the 480 x 270 space with a top-left origin.
 pub trait Renderer {
     fn clear(&mut self, color: Color);
+    fn zero(&mut self);
     fn fill_rect(&mut self, x: i32, y: i32, w: i32, h: i32, color: Color);
     fn fill_circle(&mut self, cx: i32, cy: i32, radius: i32, color: Color);
     fn draw_text(&mut self, x: i32, y: i32, scale: i32, color: Color, text: &str);
@@ -90,6 +91,10 @@ impl Renderer for Framebuffer {
             px[1] = color.g;
             px[2] = color.b;
         }
+    }
+
+    fn zero(&mut self) {
+        self.pixels.fill(0);
     }
 
     fn fill_rect(&mut self, x: i32, y: i32, w: i32, h: i32, color: Color) {
@@ -216,18 +221,6 @@ mod tests {
         fb.clear(Color::BLACK);
         fb.draw_text(0, 0, 1, Color::WHITE, "H");
 
-        for y in 0..13 {
-            for x in 0..13 {
-                let c = if pixel(&fb, x, y) == [0, 0, 0] {
-                    '.'
-                } else {
-                    '*'
-                };
-
-                print!("{c}");
-            }
-            println!();
-        }
         // 'H' paints vertical bars at columns 2-3 and 6-7, joined by a bar in
         // row 3; column 0 and the bottom row are empty.
         assert_eq!(pixel(&fb, 0, 0), [0, 0, 0]);

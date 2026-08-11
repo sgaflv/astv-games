@@ -132,12 +132,14 @@ impl Stage {
     fn render(&mut self) {
         let alpha = self.game.alpha();
 
-        self.framebuffer.clear(game::bg_color());
+        //self.framebuffer.clear(game::bg_color());
+        self.framebuffer.zero();
         self.game.draw(&mut self.framebuffer, alpha);
 
         if self.hud_dirty {
             self.refresh_hud();
         }
+
         self.framebuffer
             .draw_text(HUD_POS.0, HUD_POS.1, 1, HUD_COLOR, &self.hud_buffer);
 
