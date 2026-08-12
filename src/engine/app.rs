@@ -3,6 +3,7 @@ use crate::engine::present::Presenter;
 use crate::engine::render::{Color, Framebuffer, Renderer};
 use crate::engine::start::{Start, State};
 use crate::game::{self, Direction, PLAYERS};
+use crate::sprites::SpriteSheet;
 
 use miniquad::{EventHandler, KeyCode, KeyMods};
 
@@ -39,6 +40,13 @@ const MENU_OPTION_SCALE: i32 = 2;
 const MENU_OPTION_Y: i32 = 150;
 const MENU_OPTION_LINE: i32 = 36;
 const MENU_DIM_COLOR: Color = Color::rgb(120, 120, 130);
+
+// The apple food sprite sheet: 12 frames of 24x24 (one board cell) laid out
+// horizontally in assets/apple_rotate.png.
+const APPLE_SPRITE: &str = "apple_rotate.png";
+const APPLE_FRAME_W: usize = 24;
+const APPLE_FRAME_H: usize = 24;
+const APPLE_FRAMES: usize = 12;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Input {
@@ -142,6 +150,7 @@ pub struct Stage {
     start: Start,
     framebuffer: Framebuffer,
     presenter: Presenter,
+    apple: SpriteSheet,
 
     // Timing.
     frame_start: f64,
@@ -178,10 +187,13 @@ pub struct Stage {
 impl Stage {
     pub fn new() -> Stage {
         let now = miniquad::date::now();
+        let apple = SpriteSheet::load(APPLE_SPRITE, APPLE_FRAME_W, APPLE_FRAME_H, APPLE_FRAMES)
+            .expect("embedded apple sprite sheet must load");
         Stage {
             start: Start::new(),
             framebuffer: Framebuffer::new(),
             presenter: Presenter::new(),
+            apple,
             frame_start: now,
             frame_count: 0,
             fps_value: 0,
@@ -286,7 +298,9 @@ impl Stage {
             State::Menu => self.draw_menu(),
             State::Playing => {
                 let alpha = self.start.game.alpha();
-                self.start.game.draw(&mut self.framebuffer, alpha);
+                self.start
+                    .game
+                    .draw(&mut self.framebuffer, alpha, &self.apple);
 
                 if self.hud_dirty {
                     self.refresh_hud();

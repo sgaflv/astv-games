@@ -28,6 +28,9 @@ physical display (1920×1080 ×4, 3840×2160 ×8, or letterboxed)
 | ----------------------------- | ----------------------------------------------------------- |
 | `src/lib.rs`                  | Module wiring, `Conf`, `desktop_main()`, Android `quad_main` |
 | `src/main.rs`                 | Calls `snake::desktop_main()` (desktop only)                |
+| `build.rs`                    | Embeds every file under `assets/` into the binary           |
+| `src/assets.rs`               | Asset registry: look up embedded assets by file name        |
+| `src/sprites/mod.rs`          | `Sprite`/`SpriteSheet`: PNG decode + alpha-composited blit  |
 | `src/game.rs`                 | `Game`: two snakes, shared food, tick clock, per-player input, drawing |
 | `src/snake.rs`                | Reusable `Snake`: body, direction, input queue, growth, drawing |
 | `src/input.rs`                | Device-aware Android gamepad queue + `surfaceOnPlayerKey` JNI export |
@@ -74,12 +77,26 @@ physical display (1920×1080 ×4, 3840×2160 ×8, or letterboxed)
 
 ## Rendering (`src/render.rs`, `src/font.rs`)
 
-* `Renderer` trait exposes only integer, top-left-origin calls.
+* `Renderer` trait exposes only integer, top-left-origin calls, including
+  `draw_image` for alpha-composited RGBA8 blits.
 * `Framebuffer` is a 480x270 RGB8 `Vec<u8>`; all shapes are clipped.
 * `integer_scale(w, h)` returns the largest integer scale that fits:
   `min(w/480, h/270).max(1)`.
 * Text uses the public-domain `font8x8::legacy::BASIC_LEGACY` bitmap font
   (8x8 glyphs, bit 7 = leftmost column, non-ASCII falls back to `?`).
+
+## Assets & sprites (`build.rs`, `src/assets.rs`, `src/sprites/mod.rs`)
+
+* `build.rs` scans `assets/` and emits a static `(name, bytes)` table that is
+  `include!`-ed into `src/assets.rs`, so every asset is embedded in the binary
+  and loadable by file name on desktop, Android and in tests.
+* `SpriteSheet::load(name, size_x, size_y, sprite_count)` decodes a PNG
+  (via the `png` crate) into RGBA8 and crops a horizontal strip of
+  `size_x` x `size_y` frames; `SpriteSheet::sprite(i)` returns a `Sprite`.
+* `Sprite::draw(&mut renderer, x, y)` blits the frame through `Renderer`
+  `draw_image`, alpha-compositing over the framebuffer.
+* The game's food uses the embedded `apple_rotate.png` sheet (12 frames of
+  24x24, one board cell), animated one frame per snake move tick.
 
 ## Presentation (`src/present.rs`)
 

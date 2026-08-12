@@ -72,6 +72,21 @@ tv-stop:
 
 tv-cancel:
     adb shell input keyevent KEYCODE_HOME
+
+tv-power:
+    adb shell input keyevent KEYCODE_POWER
+    
+tv-volume-up:
+	adb shell input keyevent KEYCODE_VOLUME_UP
+
+tv-volume-down:
+	adb shell input keyevent KEYCODE_VOLUME_DOWN
+
+tv-mute:
+	adb shell input keyevent KEYCODE_VOLUME_MUTE
+
+tv-volume:
+	adb shell cmd media_session volume --stream 3 --set 13    
     
 log:
     adb logcat

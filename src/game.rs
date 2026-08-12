@@ -6,6 +6,7 @@ pub use crate::snake::{
 };
 
 use crate::engine::render::{Color, Renderer};
+use crate::sprites::SpriteSheet;
 
 use rand::RngExt;
 use rand::rngs::ThreadRng;
@@ -26,9 +27,6 @@ pub const PLAYERS: usize = 2;
 // Palette (matches the original Bevy rendering as closely as practical).
 const BG_COLOR: Color = Color::rgb(13, 13, 18);
 const GRID_COLOR: Color = Color::rgb(38, 38, 46);
-const FOOD_COLOR: Color = Color::rgb(230, 26, 26);
-
-const FOOD_RADIUS: i32 = 5;
 
 /// Per-player snake colors.
 const SNAKE_COLORS: [Color; PLAYERS] = [Color::rgb(51, 204, 51), Color::rgb(77, 148, 255)];
@@ -48,6 +46,8 @@ pub struct Game {
     food: Vec<Cell>,
     rng: ThreadRng,
     steps_in_tick: u32,
+    /// Number of completed snake move ticks; drives sprite animation.
+    moves: u64,
 }
 
 impl Default for Game {
@@ -73,6 +73,7 @@ impl Game {
             food: Vec::new(),
             rng,
             steps_in_tick: 0,
+            moves: 0,
         };
         game.respawn_food();
         game
@@ -92,6 +93,7 @@ impl Game {
         self.steps_in_tick += 1;
         if self.steps_in_tick >= TICK_STEPS {
             self.steps_in_tick = 0;
+            self.moves += 1;
             for s in &mut self.snakes {
                 s.move_tick(&self.food);
             }
@@ -192,19 +194,24 @@ impl Game {
         }
     }
 
-    /// Draw the board, both snakes and the shared food.
-    pub fn draw(&self, r: &mut impl Renderer, alpha: u32) {
+    /// Draw the board, both snakes and the shared food. `apple` is the sprite
+    /// sheet used for food; its frames cycle with every move tick.
+    pub fn draw(&self, r: &mut impl Renderer, alpha: u32, apple: &SpriteSheet) {
         draw_grid(r);
         for s in &self.snakes {
             s.draw(r, alpha);
         }
-        self.draw_food(r);
+        self.draw_food(r, apple);
     }
 
-    fn draw_food(&self, r: &mut impl Renderer) {
+    fn draw_food(&self, r: &mut impl Renderer, apple: &SpriteSheet) {
+        let frame = (self.moves as usize) % apple.len();
+        let Some(apple) = apple.sprite(frame) else {
+            return;
+        };
         for food in &self.food {
             let (cx, cy) = Self::cell_screen(*food);
-            r.fill_circle(cx + CELL / 2, cy + CELL / 2, FOOD_RADIUS, FOOD_COLOR);
+            apple.draw(r, cx, cy);
         }
     }
 
@@ -533,8 +540,8 @@ mod tests {
         game.snakes[1].body = (0..=7)
             .rev()
             .map(|x| Segment {
-                current: Cell { x: x, y: 5 },
-                previous: Cell { x: x, y: 5 },
+                current: Cell { x, y: 5 },
+                previous: Cell { x, y: 5 },
             })
             .collect();
         game.snakes[1].direction = Direction::Right;

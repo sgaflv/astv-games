@@ -1,7 +1,9 @@
+pub mod assets;
 pub mod engine;
 pub mod game;
 pub mod input;
 pub mod snake;
+pub mod sprites;
 
 /// Local desktop window size. Independent of the 480x270 logical resolution;
 /// on a 16:9 display it maps to an integer scale (960x540 -> x2).

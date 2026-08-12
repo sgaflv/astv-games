@@ -33,6 +33,9 @@ pub trait Renderer {
     fn fill_rect(&mut self, x: i32, y: i32, w: i32, h: i32, color: Color);
     fn fill_circle(&mut self, cx: i32, cy: i32, radius: i32, color: Color);
     fn draw_text(&mut self, x: i32, y: i32, scale: i32, color: Color, text: &str);
+    /// Blit an RGBA8 image (row-major, 4 bytes per pixel) at `(x, y)`,
+    /// alpha-composited over the existing pixels and clipped to the screen.
+    fn draw_image(&mut self, x: i32, y: i32, pixels: &[u8], width: usize, height: usize);
 }
 
 /// CPU software framebuffer. The game renders into this at logical resolution;
@@ -174,6 +177,39 @@ impl Renderer for Framebuffer {
     fn draw_text(&mut self, x: i32, y: i32, scale: i32, color: Color, text: &str) {
         font::draw_text(self, x, y, scale, color, text);
     }
+
+    fn draw_image(&mut self, x: i32, y: i32, image: &[u8], width: usize, height: usize) {
+        let x0 = x.max(0);
+        let y0 = y.max(0);
+        let x1 = (x + width as i32).min(WIDTH as i32);
+        let y1 = (y + height as i32).min(HEIGHT as i32);
+
+        if x0 >= x1 || y0 >= y1 || width == 0 || height == 0 {
+            return;
+        }
+
+        for py in y0..y1 {
+            let row = (py - y) as usize;
+
+            for px in x0..x1 {
+                let col = (px - x) as usize;
+                let src = (row * width + col) * 4;
+                let a = image[src + 3] as u32;
+
+                if a == 0 {
+                    continue;
+                }
+
+                let dst = (py as usize * WIDTH + px as usize) * 3;
+
+                if a == 255 {
+                    self.pixels[dst] = image[src];
+                    self.pixels[dst + 1] = image[src + 1];
+                    self.pixels[dst + 2] = image[src + 2];
+                }
+            }
+        }
+    }
 }
 
 /// Largest integer scale factor that fits the given physical output size
@@ -263,5 +299,41 @@ mod tests {
         assert_eq!(pixel(&fb, 7, 0), [0, 0, 0]);
         assert_eq!(pixel(&fb, 3, 3), [255, 255, 255]);
         assert_eq!(pixel(&fb, 3, 7), [0, 0, 0]);
+    }
+
+    /// Helper: RGBA8 image of the given color, 2x1 with the requested alpha.
+    fn rgba(r: u8, g: u8, b: u8, a: u8) -> [u8; 8] {
+        [r, g, b, a, r, g, b, a]
+    }
+
+    #[test]
+    fn draw_image_composites_alpha() {
+        let mut fb = Framebuffer::new();
+        fb.clear(Color::BLACK);
+
+        // Opaque pixel fully replaces the background.
+        fb.draw_image(0, 0, &rgba(200, 100, 50, 255), 2, 1);
+        assert_eq!(pixel(&fb, 0, 0), [200, 100, 50]);
+
+        // Fully transparent leaves the background untouched.
+        fb.draw_image(0, 1, &rgba(255, 0, 0, 0), 2, 1);
+        assert_eq!(pixel(&fb, 0, 1), [0, 0, 0]);
+
+        // Half alpha mixes source and background: (255*128 + 0*127)/255 = 128.
+        fb.draw_image(0, 2, &rgba(255, 0, 0, 128), 2, 1);
+        assert_eq!(pixel(&fb, 0, 2), [128, 0, 0]);
+    }
+
+    #[test]
+    fn draw_image_clips_to_bounds() {
+        let mut fb = Framebuffer::new();
+        fb.clear(Color::BLACK);
+        // Image hanging off the top-left corner clips without panicking.
+        let white4x4 = [255u8, 255, 255, 255].repeat(4 * 4);
+        fb.draw_image(-2, -2, &white4x4, 4, 4);
+        assert_eq!(pixel(&fb, 0, 0), [255, 255, 255]);
+        // Fully off-screen is a no-op.
+        fb.draw_image(WIDTH as i32 + 1, 0, &white4x4, 4, 4);
+        assert_eq!(pixel(&fb, WIDTH as i32 - 1, 0), [0, 0, 0]);
     }
 }
