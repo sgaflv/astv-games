@@ -9,6 +9,10 @@ pub const HEIGHT: usize = 270;
 /// index into it.
 pub const PALETTE_SIZE: usize = 256;
 
+/// Palette index reserved for transparency. Sprite blits skip pixels holding
+/// this index instead of drawing them.
+pub const TRANSPARENT: u8 = 255;
+
 /// Bytes per logical frame: 480 * 270 = 129600 (~127 KiB), one palette index
 /// per pixel. This is a third of the previous RGB8 buffer, which is the point:
 /// the CPU only touches indices, and the GPU turns them into colors.
@@ -98,6 +102,19 @@ impl Palette {
         }
         best
     }
+
+    /// Convert one RGBA8 pixel to a palette index. Alpha is thresholded: a
+    /// pixel that is at least 50% transparent (alpha <= 128) maps to
+    /// `TRANSPARENT`; anything less transparent becomes fully opaque and takes
+    /// the nearest palette entry. Used to preprocess images once at load time,
+    /// so `draw_image` never has to look colors up per frame.
+    pub fn quantize_rgba(&self, rgba: [u8; 4]) -> u8 {
+        if rgba[3] <= 128 {
+            TRANSPARENT
+        } else {
+            self.index_of(Color::rgb(rgba[0], rgba[1], rgba[2]))
+        }
+    }
 }
 
 impl Default for Palette {
@@ -154,10 +171,12 @@ pub trait Renderer {
     fn fill_rect(&mut self, x: i32, y: i32, w: i32, h: i32, color: Color);
     fn fill_circle(&mut self, cx: i32, cy: i32, radius: i32, color: Color);
     fn draw_text(&mut self, x: i32, y: i32, scale: i32, color: Color, text: &str);
-    /// Blit an RGBA8 image (row-major, 4 bytes per pixel) at `(x, y)`,
-    /// alpha-composited over the existing pixels and clipped to the screen.
-    /// The result is quantized to the nearest palette entry.
-    fn draw_image(&mut self, x: i32, y: i32, pixels: &[u8], width: usize, height: usize);
+    /// Blit a preprocessed palette-indexed image (row-major, one byte per
+    /// pixel) at `(x, y)`, clipped to the screen. Pixels holding
+    /// [`TRANSPARENT`] are skipped. Images must be converted to indices at
+    /// load time (see [`Palette::quantize_rgba`]); the blit itself is a pure
+    /// copy.
+    fn draw_image(&mut self, x: i32, y: i32, indices: &[u8], width: usize, height: usize);
 }
 
 /// CPU software framebuffer. The game renders into this at logical resolution;
@@ -282,7 +301,7 @@ impl Renderer for Framebuffer {
         font::draw_text(self, x, y, scale, color, text);
     }
 
-    fn draw_image(&mut self, x: i32, y: i32, image: &[u8], width: usize, height: usize) {
+    fn draw_image(&mut self, x: i32, y: i32, indices: &[u8], width: usize, height: usize) {
         let x0 = x.max(0);
         let y0 = y.max(0);
         let x1 = (x + width as i32).min(WIDTH as i32);
@@ -292,46 +311,23 @@ impl Renderer for Framebuffer {
             return;
         }
 
-        // Placeholder until sprites are palette-indexed themselves: each opaque
-        // pixel is alpha-composited over the indexed backdrop and the result is
-        // quantized back to the nearest palette entry.
+        // The image was already converted to palette indices at load time;
+        // only `TRANSPARENT` pixels are filtered out here.
         for py in y0..y1 {
             let row = (py - y) as usize;
 
             for px in x0..x1 {
                 let col = (px - x) as usize;
-                let src = (row * width + col) * 4;
-                let a = image[src + 3] as u32;
+                let index = indices[row * width + col];
 
-                if a == 0 {
+                if index == TRANSPARENT {
                     continue;
                 }
 
-                let fg = Color::rgb(image[src], image[src + 1], image[src + 2]);
-                let dst = py as usize * WIDTH + px as usize;
-
-                let index = if a == 255 {
-                    self.palette.index_of(fg)
-                } else {
-                    let bg = self.palette.rgb(self.pixels[dst]);
-                    self.palette.index_of(blend(bg, fg, a))
-                };
-
-                self.pixels[dst] = index;
+                self.pixels[py as usize * WIDTH + px as usize] = index;
             }
         }
     }
-}
-
-/// Alpha-composite `fg` over `bg` with the given alpha (0..=255), rounding the
-/// channel values like the original RGB renderer did.
-fn blend(bg: Color, fg: Color, alpha: u32) -> Color {
-    let inv = 255 - alpha;
-    Color::rgb(
-        ((bg.r as u32 * inv + fg.r as u32 * alpha) / 255) as u8,
-        ((bg.g as u32 * inv + fg.g as u32 * alpha) / 255) as u8,
-        ((bg.b as u32 * inv + fg.b as u32 * alpha) / 255) as u8,
-    )
 }
 
 /// Largest integer scale factor that fits the given physical output size
@@ -449,37 +445,55 @@ mod tests {
         assert_eq!(rgb_at(&fb, 3, 7), [0, 0, 0]);
     }
 
-    /// Helper: RGBA8 image of the given color, 2x1 with the requested alpha.
-    fn rgba(r: u8, g: u8, b: u8, a: u8) -> [u8; 8] {
-        [r, g, b, a, r, g, b, a]
+    /// Helper: a 2x1 image of `indices` (one byte per pixel).
+    fn indexed(a: u8, b: u8) -> [u8; 2] {
+        [a, b]
     }
 
     #[test]
-    fn draw_image_composites_alpha() {
+    fn draw_image_blits_indices_and_skips_transparency() {
         let mut fb = Framebuffer::new();
         fb.clear(Color::BLACK);
+        let white = fb.palette.index_of(Color::WHITE);
 
-        // Opaque white fully replaces the background.
-        fb.draw_image(0, 0, &rgba(255, 255, 255, 255), 2, 1);
-        assert_eq!(rgb_at(&fb, 0, 0), [255, 255, 255]);
+        // Opaque indices replace the background.
+        fb.draw_image(0, 0, &indexed(white, white), 2, 1);
+        assert_eq!(pixel(&fb, 0, 0), white);
+        assert_eq!(pixel(&fb, 1, 0), white);
 
-        // Fully transparent leaves the background untouched.
-        fb.draw_image(0, 1, &rgba(255, 0, 0, 0), 2, 1);
-        assert_eq!(rgb_at(&fb, 0, 1), [0, 0, 0]);
+        // TRANSPARENT (255) leaves the background untouched.
+        fb.clear(Color::BLACK);
+        fb.draw_image(0, 0, &indexed(TRANSPARENT, TRANSPARENT), 2, 1);
+        assert_eq!(pixel(&fb, 0, 0), fb.palette.index_of(Color::BLACK));
 
-        // Half alpha blends source and background, then quantizes: the stored
-        // entry must be the palette's closest match to the blend (128,0,0).
-        fb.draw_image(0, 2, &rgba(255, 0, 0, 128), 2, 1);
-        let blend = Color::rgb(128, 0, 0);
-        assert_eq!(pixel(&fb, 0, 2), fb.palette.index_of(blend));
+        // A mix: transparent over an existing white pixel keeps the white.
+        fb.clear(Color::WHITE);
+        fb.draw_image(0, 0, &indexed(TRANSPARENT, white), 2, 1);
+        assert_eq!(pixel(&fb, 0, 0), white);
+    }
+
+    #[test]
+    fn quantize_rgba_thresholds_alpha() {
+        let palette = Palette::default();
+
+        // >= 50% transparent (alpha <= 128) becomes fully transparent.
+        assert_eq!(palette.quantize_rgba([255, 0, 0, 128]), TRANSPARENT);
+        assert_eq!(palette.quantize_rgba([255, 0, 0, 0]), TRANSPARENT);
+
+        // < 50% transparent becomes opaque and maps to the nearest entry.
+        let idx = palette.quantize_rgba([255, 255, 255, 255]);
+        assert_eq!(palette.rgb(idx), Color::WHITE);
+        let idx = palette.quantize_rgba([255, 255, 255, 127]);
+        assert_eq!(palette.rgb(idx), Color::WHITE);
     }
 
     #[test]
     fn draw_image_clips_to_bounds() {
         let mut fb = Framebuffer::new();
         fb.clear(Color::BLACK);
+        let white = fb.palette.index_of(Color::WHITE);
         // Image hanging off the top-left corner clips without panicking.
-        let white4x4 = [255u8, 255, 255, 255].repeat(4 * 4);
+        let white4x4 = vec![white; 4 * 4];
         fb.draw_image(-2, -2, &white4x4, 4, 4);
         assert_eq!(rgb_at(&fb, 0, 0), [255, 255, 255]);
         // Fully off-screen is a no-op.

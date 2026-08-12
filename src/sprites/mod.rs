@@ -1,6 +1,7 @@
-//! Basic sprite support: a `Sprite` is a decoded RGBA8 image that can be drawn
-//! onto the framebuffer; a `SpriteSheet` is a horizontal strip of equal-sized
-//! sprites loaded from an embedded PNG asset.
+//! Basic sprite support: a `Sprite` is a palette-indexed image (one byte per
+//! pixel, converted from RGBA at load time) that can be blitted onto the
+//! framebuffer; a `SpriteSheet` is a horizontal strip of equal-sized sprites
+//! loaded from an embedded PNG asset.
 //!
 //! ```no_run
 //! use snake::sprites::SpriteSheet;
@@ -8,7 +9,7 @@
 //! // 12 frames of 24x24 in assets/apple_rotate.png.
 //! let sheet = SpriteSheet::load("apple_rotate.png", 24, 24, 12)?;
 //! let apple = sheet.sprite(0).unwrap();
-//! // apple.draw(&mut framebuffer, x, y);  // alpha-composited blit
+//! // apple.draw(&mut framebuffer, x, y);  // transparent pixels are skipped
 //! # Ok::<(), snake::sprites::SpriteError>(())
 //! ```
 
@@ -17,7 +18,7 @@ use std::fmt;
 use std::io::Cursor;
 
 use crate::assets;
-use crate::engine::render::Renderer;
+use crate::engine::render::{Palette, Renderer};
 
 /// Bytes per pixel in a decoded sprite.
 const CHANNELS: usize = 4;
@@ -64,21 +65,23 @@ impl From<png::DecodingError> for SpriteError {
     }
 }
 
-/// A single decoded RGBA8 image.
+/// A single decoded sprite as palette indices.
 pub struct Sprite {
     width: usize,
     height: usize,
-    pixels: Vec<u8>,
+    /// Palette indices, one byte per pixel, row-major. Pixels holding
+    /// `render::TRANSPARENT` are not drawn.
+    indices: Vec<u8>,
 }
 
 impl Sprite {
-    /// Wrap pre-decoded RGBA8 pixels (4 bytes per pixel, row-major).
-    pub fn new(pixels: Vec<u8>, width: usize, height: usize) -> Sprite {
-        debug_assert_eq!(pixels.len(), width * height * CHANNELS);
+    /// Wrap pre-converted palette indices (one byte per pixel, row-major).
+    pub fn new(indices: Vec<u8>, width: usize, height: usize) -> Sprite {
+        debug_assert_eq!(indices.len(), width * height);
         Sprite {
             width,
             height,
-            pixels,
+            indices,
         }
     }
 
@@ -92,16 +95,16 @@ impl Sprite {
         self.height
     }
 
-    /// Raw RGBA8 pixels, row-major.
+    /// Raw palette indices, row-major, one byte per pixel.
     #[inline]
     pub fn pixels(&self) -> &[u8] {
-        &self.pixels
+        &self.indices
     }
 
-    /// Draw the sprite onto a renderer (e.g. the framebuffer) at `(x, y)`,
-    /// alpha-composited and clipped.
+    /// Blit the sprite onto a renderer (e.g. the framebuffer) at `(x, y)`,
+    /// clipped to the screen. Transparent pixels are skipped.
     pub fn draw(&self, r: &mut impl Renderer, x: i32, y: i32) {
-        r.draw_image(x, y, &self.pixels, self.width, self.height);
+        r.draw_image(x, y, &self.indices, self.width, self.height);
     }
 }
 
@@ -147,17 +150,28 @@ impl SpriteSheet {
             });
         }
 
+        // Preprocess each frame into palette indices once, at load time, so
+        // drawing is a pure blit (see `Palette::quantize_rgba`).
+        let palette = Palette::default();
         let mut frames = Vec::with_capacity(sprite_count);
         for frame in 0..sprite_count {
             let origin = frame * size_x;
-            let mut pixels = vec![0; size_x * size_y * CHANNELS];
+            let mut indices = vec![0; size_x * size_y];
             for row in 0..size_y {
                 let src = (row * image.width + origin) * CHANNELS;
-                let dst = row * size_x * CHANNELS;
-                pixels[dst..dst + size_x * CHANNELS]
-                    .copy_from_slice(&image.pixels[src..src + size_x * CHANNELS]);
+                let dst = row * size_x;
+                for col in 0..size_x {
+                    let o = src + col * CHANNELS;
+                    let rgba = [
+                        image.pixels[o],
+                        image.pixels[o + 1],
+                        image.pixels[o + 2],
+                        image.pixels[o + 3],
+                    ];
+                    indices[dst + col] = palette.quantize_rgba(rgba);
+                }
             }
-            frames.push(Sprite::new(pixels, size_x, size_y));
+            frames.push(Sprite::new(indices, size_x, size_y));
         }
 
         Ok(SpriteSheet {
@@ -231,7 +245,7 @@ fn decode_png(data: &[u8]) -> Result<RgbaImage, SpriteError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::engine::render::{Color, Framebuffer};
+    use crate::engine::render::{Color, Framebuffer, TRANSPARENT};
 
     fn apple_sheet() -> SpriteSheet {
         SpriteSheet::load("apple_rotate.png", 24, 24, 12).expect("apple sheet loads")
@@ -246,7 +260,7 @@ mod tests {
             let sprite = sheet.sprite(frame).expect("frame exists");
             assert_eq!(sprite.width(), 24);
             assert_eq!(sprite.height(), 24);
-            assert_eq!(sprite.pixels().len(), 24 * 24 * 4);
+            assert_eq!(sprite.pixels().len(), 24 * 24);
         }
     }
 
@@ -269,9 +283,40 @@ mod tests {
         }
 
         let sheet = SpriteSheet::from_png(&png_bytes, 1, 1, 2).expect("2x1 sheet loads");
+        let palette = Palette::default();
         assert_eq!(sheet.len(), 2);
-        assert_eq!(sheet.sprite(0).unwrap().pixels(), &[255, 0, 0, 255]);
-        assert_eq!(sheet.sprite(1).unwrap().pixels(), &[0, 0, 255, 255]);
+        assert_eq!(
+            sheet.sprite(0).unwrap().pixels(),
+            &[palette.index_of(Color::rgb(255, 0, 0))]
+        );
+        assert_eq!(
+            sheet.sprite(1).unwrap().pixels(),
+            &[palette.index_of(Color::rgb(0, 0, 255))]
+        );
+    }
+
+    #[test]
+    fn loading_thresholds_alpha_into_transparency() {
+        // 2x1 strip: opaque red, and a blue pixel that is 50% transparent.
+        let mut strip = Vec::new();
+        strip.extend_from_slice(&[255, 0, 0, 255]);
+        strip.extend_from_slice(&[0, 0, 255, 128]);
+        let mut png_bytes = Vec::new();
+        {
+            let mut encoder = png::Encoder::new(&mut png_bytes, 2, 1);
+            encoder.set_color(png::ColorType::Rgba);
+            encoder.set_depth(png::BitDepth::Eight);
+            let mut writer = encoder.write_header().expect("png header");
+            writer
+                .write_image_data(&strip)
+                .expect("png write image data");
+        }
+
+        let sheet = SpriteSheet::from_png(&png_bytes, 2, 1, 1).expect("2x1 sheet loads");
+        let palette = Palette::default();
+        let indices = sheet.sprite(0).unwrap().pixels();
+        assert_eq!(indices[0], palette.index_of(Color::rgb(255, 0, 0)));
+        assert_eq!(indices[1], TRANSPARENT);
     }
 
     #[test]

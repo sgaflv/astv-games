@@ -5,8 +5,9 @@ fn dump(fb: &Framebuffer, label: &str, x0: i32, y0: i32) {
     for y in y0..y0 + 8 {
         let mut line = String::new();
         for x in x0..x0 + 8 {
-            let i = ((y as usize) * WIDTH + x as usize) * 4;
-            line.push(if fb.pixels()[i] > 128 { '#' } else { '.' });
+            // One palette index per pixel; anything but index 0 is painted.
+            let i = (y as usize) * WIDTH + x as usize;
+            line.push(if fb.pixels()[i] != 0 { '#' } else { '.' });
         }
         println!("{line}");
     }
