@@ -10,7 +10,7 @@ nearest-neighbour scaling. Bevy has been removed completely.
 Game logic (integer coords, fixed 60 Hz timestep)
       │
       ▼
-Renderer trait (clear / fill_rect / fill_circle / draw_text)
+Renderer trait (clear / fill_rect / fill_circle / draw_text / draw_rle_image)
       │
       ▼
 480×270 indexed CPU framebuffer (129,600 B ≈ 127 KiB, one palette index/pixel)
@@ -31,7 +31,7 @@ physical display (1920×1080 ×4, 3840×2160 ×8, or letterboxed)
 | `src/main.rs`                 | Calls `snake::desktop_main()` (desktop only)                |
 | `build.rs`                    | Embeds every file under `assets/` into the binary           |
 | `src/assets.rs`               | Asset registry: look up embedded assets by file name        |
-| `src/sprites/mod.rs`          | `Sprite`/`SpriteSheet`: PNG decode + alpha-composited blit  |
+| `src/sprites/mod.rs`          | `Sprite`/`SpriteSheet` decode + `RleSprite` (RLE) blit                  |
 | `src/game.rs`                 | `Game`: two snakes, shared food, tick clock, per-player input, drawing |
 | `src/snake.rs`                | Reusable `Snake`: body, direction, input queue, growth, drawing |
 | `src/input.rs`                | Device-aware Android gamepad queue + `surfaceOnPlayerKey` JNI export |
@@ -79,12 +79,13 @@ physical display (1920×1080 ×4, 3840×2160 ×8, or letterboxed)
 ## Rendering (`src/render.rs`, `src/font.rs`)
 
 * `Renderer` trait exposes only integer, top-left-origin calls, including
-  `draw_image` for RGBA8 blits.
+  `draw_rle_image` for sprite blits.
 * `Framebuffer` is a 480x270 indexed `Vec<u8>`: each pixel is one 8-bit index
   into a 256-entry `Palette` (a third of the old RGB8 buffer). The game's
   colors are pinned at fixed palette indices; `Palette::index_of` finds the
-  exact entry (or the nearest entry, used by RGBA sprite blits until sprites
-  are palette-indexed). All shapes are clipped.
+  exact entry (or the nearest entry, used by `Palette::quantize_rgba` when
+  sprites are converted to palette indices at load time). All shapes are
+  clipped.
 * `integer_scale(w, h)` returns the largest integer scale that fits:
   `min(w/480, h/270).max(1)`.
 * Text uses the public-domain `font8x8::legacy::BASIC_LEGACY` bitmap font
@@ -98,8 +99,11 @@ physical display (1920×1080 ×4, 3840×2160 ×8, or letterboxed)
 * `SpriteSheet::load(name, size_x, size_y, sprite_count)` decodes a PNG
   (via the `png` crate) into RGBA8 and crops a horizontal strip of
   `size_x` x `size_y` frames; `SpriteSheet::sprite(i)` returns a `Sprite`.
-* `Sprite::draw(&mut renderer, x, y)` blits the frame through `Renderer`
-  `draw_image`, alpha-compositing over the framebuffer.
+* `SpriteSheet::to_rle()` encodes every frame once at load time into an
+  `RleSprite` (a compact run-length stream of palette indices), which is what
+  the game draws with: `RleSprite::draw(&mut renderer, x, y)` blits the frame
+  through `Renderer::draw_rle_image`, writing only opaque runs so transparent
+  pixels never touch the framebuffer.
 * The game's food uses the embedded `apple_rotate.png` sheet (12 frames of
   24x24, one board cell), animated one frame per snake move tick.
 

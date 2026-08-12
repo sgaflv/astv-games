@@ -1,3 +1,6 @@
+use std::error::Error;
+use std::fmt;
+
 use crate::engine::font;
 
 /// Logical rendering resolution. 480 x 270 is 16:9 and scales with an exact
@@ -162,6 +165,108 @@ impl Default for Palette {
     }
 }
 
+/// Maximum run length that fits in a control byte's six low bits.
+pub(crate) const MAX_RUN: usize = 63;
+
+/// Control type `00`: the next `n` bytes are opaque palette indices.
+pub(crate) const CT_OPAQUE: u8 = 0b00 << 6;
+/// Control type `01`: skip the next `n` pixels as transparent.
+pub(crate) const CT_SKIP: u8 = 0b01 << 6;
+/// Control type `10`: skip `n` scan lines and restart at the first pixel of
+/// that line (count 1 = switch to the next scan line). Every scan line is
+/// terminated with one of these.
+pub(crate) const CT_NEXT: u8 = 0b10 << 6;
+/// The count bits (low six) of a control byte.
+pub(crate) const CT_COUNT: u8 = 0x3F;
+
+/// Errors raised while decoding an RLE sprite stream.
+#[derive(Debug)]
+pub enum RleError {
+    /// A control byte with type bits `11`, which the format does not define.
+    ReservedControlType { offset: usize },
+    /// An opaque run (`00`) promises more index bytes than the stream holds.
+    TruncatedRun { offset: usize },
+}
+
+impl fmt::Display for RleError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            RleError::ReservedControlType { offset } => {
+                write!(f, "control type 11 at byte {offset} is not defined")
+            }
+            RleError::TruncatedRun { offset } => {
+                write!(
+                    f,
+                    "opaque run at byte {offset} runs past the end of the data"
+                )
+            }
+        }
+    }
+}
+
+impl Error for RleError {}
+
+/// A single opaque run of an RLE stream: `indices.len()` consecutive pixels
+/// starting at column `x` of scan line `y`.
+pub(crate) struct RleRun<'a> {
+    pub(crate) x: usize,
+    pub(crate) y: usize,
+    pub(crate) indices: &'a [u8],
+}
+
+/// Streaming decoder over an RLE sprite stream. Advances `(x, y)` exactly as
+/// the encoder did and yields the opaque runs in order.
+pub(crate) struct RleDecoder<'a> {
+    data: &'a [u8],
+    pos: usize,
+    x: usize,
+    y: usize,
+}
+
+impl<'a> RleDecoder<'a> {
+    pub(crate) fn new(data: &'a [u8]) -> RleDecoder<'a> {
+        RleDecoder {
+            data,
+            pos: 0,
+            x: 0,
+            y: 0,
+        }
+    }
+
+    /// The next opaque run, or `None` at the end of the stream.
+    pub(crate) fn next_run(&mut self) -> Result<Option<RleRun<'a>>, RleError> {
+        while self.pos < self.data.len() {
+            let control = self.data[self.pos];
+            let offset = self.pos;
+            self.pos += 1;
+            let count = (control & CT_COUNT) as usize;
+            match control >> 6 {
+                0 => {
+                    let end = self.pos + count;
+                    if end > self.data.len() {
+                        return Err(RleError::TruncatedRun { offset });
+                    }
+                    let run = RleRun {
+                        x: self.x,
+                        y: self.y,
+                        indices: &self.data[self.pos..end],
+                    };
+                    self.pos = end;
+                    self.x += count;
+                    return Ok(Some(run));
+                }
+                1 => self.x += count,
+                2 => {
+                    self.y += count;
+                    self.x = 0;
+                }
+                _ => return Err(RleError::ReservedControlType { offset }),
+            }
+        }
+        Ok(None)
+    }
+}
+
 /// Lightweight renderer abstraction. All coordinates are integer logical
 /// pixels in the 480 x 270 space with a top-left origin. Colors are written
 /// as palette indices.
@@ -171,12 +276,16 @@ pub trait Renderer {
     fn fill_rect(&mut self, x: i32, y: i32, w: i32, h: i32, color: Color);
     fn fill_circle(&mut self, cx: i32, cy: i32, radius: i32, color: Color);
     fn draw_text(&mut self, x: i32, y: i32, scale: i32, color: Color, text: &str);
-    /// Blit a preprocessed palette-indexed image (row-major, one byte per
-    /// pixel) at `(x, y)`, clipped to the screen. Pixels holding
-    /// [`TRANSPARENT`] are skipped. Images must be converted to indices at
-    /// load time (see [`Palette::quantize_rgba`]); the blit itself is a pure
-    /// copy.
-    fn draw_image(&mut self, x: i32, y: i32, indices: &[u8], width: usize, height: usize);
+
+    /// Blit an RLE-encoded sprite at `(x, y)`, clipped to the screen. The
+    /// stream (see `sprites::rle_encode`) is control bytes `xx yyyyyy`: type
+    /// `00` is followed by `n` opaque palette indices on the current scan
+    /// line, type `01` skips `n` transparent pixels and type `10` skips `n`
+    /// scan lines (count 1 = next line), ending at the first pixel of that
+    /// line. Only opaque runs are drawn, so transparent pixels never touch the
+    /// target. Renderers decode the stream and write the runs straight into
+    /// their buffer.
+    fn draw_rle_image(&mut self, x: i32, y: i32, data: &[u8]);
 }
 
 /// CPU software framebuffer. The game renders into this at logical resolution;
@@ -301,30 +410,80 @@ impl Renderer for Framebuffer {
         font::draw_text(self, x, y, scale, color, text);
     }
 
-    fn draw_image(&mut self, x: i32, y: i32, indices: &[u8], width: usize, height: usize) {
-        let x0 = x.max(0);
-        let y0 = y.max(0);
-        let x1 = (x + width as i32).min(WIDTH as i32);
-        let y1 = (y + height as i32).min(HEIGHT as i32);
+    fn draw_rle_image(&mut self, x: i32, y: i32, data: &[u8]) {
+        let mut pos = 0usize;
 
-        if x0 >= x1 || y0 >= y1 || width == 0 || height == 0 {
-            return;
-        }
+        let mut cx = x;
+        let mut cy = y;
 
-        // The image was already converted to palette indices at load time;
-        // only `TRANSPARENT` pixels are filtered out here.
-        for py in y0..y1 {
-            let row = (py - y) as usize;
+        while pos < data.len() {
+            let control = data[pos];
+            pos += 1;
 
-            for px in x0..x1 {
-                let col = (px - x) as usize;
-                let index = indices[row * width + col];
+            let count = (control & CT_COUNT) as i32;
 
-                if index == TRANSPARENT {
-                    continue;
+            match control >> 6 {
+                0 => {
+                    // Opaque run: the next `count` bytes are palette indices.
+                    let available = data.len() - pos;
+                    let count = (count as usize).min(available);
+
+                    if count == 0 {
+                        continue;
+                    }
+
+                    let run_start = pos;
+                    let run_end = pos + count;
+                    let run = &data[run_start..run_end];
+
+                    // Advance encoded-data position regardless of clipping.
+                    pos = run_end;
+
+                    // Entirely above/below the framebuffer.
+                    if cy < 0 {
+                        cx += count as i32;
+                        continue;
+                    }
+
+                    if cy >= self.height() as i32 {
+                        break;
+                    }
+
+                    let run_start_x = cx;
+                    let run_end_x = cx + count as i32;
+
+                    // Clip horizontally.
+                    let visible_start_x = run_start_x.max(0);
+                    let visible_end_x = run_end_x.min(self.width() as i32);
+
+                    if visible_start_x < visible_end_x {
+                        let src_start = (visible_start_x - run_start_x) as usize;
+                        let src_end = (visible_end_x - run_start_x) as usize;
+
+                        let dst_start = cy as usize * WIDTH + visible_start_x as usize;
+
+                        self.pixels[dst_start..dst_start + (src_end - src_start)]
+                            .copy_from_slice(&run[src_start..src_end]);
+                    }
+
+                    cx = run_end_x;
                 }
 
-                self.pixels[py as usize * WIDTH + px as usize] = index;
+                1 => {
+                    // Transparent run.
+                    cx += count;
+                }
+
+                2 => {
+                    // Skip scan lines.
+                    cy += count;
+                    cx = x;
+                }
+
+                _ => {
+                    // Reserved control type.
+                    break;
+                }
             }
         }
     }
@@ -451,28 +610,6 @@ mod tests {
     }
 
     #[test]
-    fn draw_image_blits_indices_and_skips_transparency() {
-        let mut fb = Framebuffer::new();
-        fb.clear(Color::BLACK);
-        let white = fb.palette.index_of(Color::WHITE);
-
-        // Opaque indices replace the background.
-        fb.draw_image(0, 0, &indexed(white, white), 2, 1);
-        assert_eq!(pixel(&fb, 0, 0), white);
-        assert_eq!(pixel(&fb, 1, 0), white);
-
-        // TRANSPARENT (255) leaves the background untouched.
-        fb.clear(Color::BLACK);
-        fb.draw_image(0, 0, &indexed(TRANSPARENT, TRANSPARENT), 2, 1);
-        assert_eq!(pixel(&fb, 0, 0), fb.palette.index_of(Color::BLACK));
-
-        // A mix: transparent over an existing white pixel keeps the white.
-        fb.clear(Color::WHITE);
-        fb.draw_image(0, 0, &indexed(TRANSPARENT, white), 2, 1);
-        assert_eq!(pixel(&fb, 0, 0), white);
-    }
-
-    #[test]
     fn quantize_rgba_thresholds_alpha() {
         let palette = Palette::default();
 
@@ -488,16 +625,32 @@ mod tests {
     }
 
     #[test]
-    fn draw_image_clips_to_bounds() {
+    fn draw_rle_image_blits_only_opaque_runs() {
         let mut fb = Framebuffer::new();
         fb.clear(Color::BLACK);
         let white = fb.palette.index_of(Color::WHITE);
-        // Image hanging off the top-left corner clips without panicking.
-        let white4x4 = vec![white; 4 * 4];
-        fb.draw_image(-2, -2, &white4x4, 4, 4);
-        assert_eq!(rgb_at(&fb, 0, 0), [255, 255, 255]);
-        // Fully off-screen is a no-op.
-        fb.draw_image(WIDTH as i32 + 1, 0, &white4x4, 4, 4);
-        assert_eq!(rgb_at(&fb, WIDTH as i32 - 1, 0), [0, 0, 0]);
+        let black = fb.palette.index_of(Color::BLACK);
+        // Hand-written stream for a 4x2 sprite:
+        //   row 0: skip 1, opaque [a, b] at (1,0), next line
+        //   row 1: opaque [c] at (0,1)
+        // Stream: 41 02 a b 81 01 c
+        let stream = [0x41, 0x02, white, white, 0x81, 0x01, white];
+        fb.draw_rle_image(0, 0, &stream);
+
+        // Skipped and trailing pixels stay on the background.
+        assert_eq!(pixel(&fb, 0, 0), black);
+        assert_eq!(pixel(&fb, 3, 0), black);
+        assert_eq!(pixel(&fb, 1, 1), black);
+        // Opaque pixels land exactly on their encoded positions.
+        assert_eq!(pixel(&fb, 1, 0), white);
+        assert_eq!(pixel(&fb, 2, 0), white);
+        assert_eq!(pixel(&fb, 0, 1), white);
+
+        // Partially visible placement clips without panicking and draws the
+        // visible part of the run.
+        fb.clear(Color::BLACK);
+        fb.draw_rle_image(-2, 0, &stream);
+        assert_eq!(pixel(&fb, 0, 0), white); // second pixel of the x=1 run
+        assert_eq!(pixel(&fb, 0, 1), black); // row 1 is fully off-screen
     }
 }

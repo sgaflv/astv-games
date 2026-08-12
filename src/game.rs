@@ -6,7 +6,7 @@ pub use crate::snake::{
 };
 
 use crate::engine::render::{Color, Renderer};
-use crate::sprites::SpriteSheet;
+use crate::engine::sprites::RleSprite;
 
 use rand::RngExt;
 use rand::rngs::ThreadRng;
@@ -194,9 +194,9 @@ impl Game {
         }
     }
 
-    /// Draw the board, both snakes and the shared food. `apple` is the sprite
-    /// sheet used for food; its frames cycle with every move tick.
-    pub fn draw(&self, r: &mut impl Renderer, alpha: u32, apple: &SpriteSheet) {
+    /// Draw the board, both snakes and the shared food. `apple` is the RLE
+    /// sprite sheet used for food; its frames cycle with every move tick.
+    pub fn draw(&self, r: &mut impl Renderer, alpha: u32, apple: &[RleSprite]) {
         draw_grid(r);
         for s in &self.snakes {
             s.draw(r, alpha);
@@ -204,14 +204,14 @@ impl Game {
         self.draw_food(r, apple);
     }
 
-    fn draw_food(&self, r: &mut impl Renderer, apple: &SpriteSheet) {
-        let frame = (self.moves as usize) % apple.len();
-        let Some(apple) = apple.sprite(frame) else {
+    fn draw_food(&self, r: &mut impl Renderer, apple: &[RleSprite]) {
+        if apple.is_empty() {
             return;
-        };
+        }
+        let frame = (self.moves as usize) % apple.len();
         for food in &self.food {
             let (cx, cy) = Self::cell_screen(*food);
-            apple.draw(r, cx, cy);
+            apple[frame].draw(r, cx, cy);
         }
     }
 

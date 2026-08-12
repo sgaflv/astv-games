@@ -3,13 +3,19 @@
 //! framebuffer; a `SpriteSheet` is a horizontal strip of equal-sized sprites
 //! loaded from an embedded PNG asset.
 //!
+//! `RleSprite` stores the same palette indices as a compact run-length-encoded
+//! stream (control bytes `xx yyyyyy`, see [`rle_encode`]) instead of one raw
+//! byte per pixel, and [`RleSprite::draw`] walks the stream to blit only the
+//! opaque runs. The stream is self-terminating, so the decoded size is the
+//! bounding box of the opaque pixels rather than a fixed frame size.
+//!
 //! ```no_run
 //! use snake::sprites::SpriteSheet;
 //!
 //! // 12 frames of 24x24 in assets/apple_rotate.png.
 //! let sheet = SpriteSheet::load("apple_rotate.png", 24, 24, 12)?;
-//! let apple = sheet.sprite(0).unwrap();
-//! // apple.draw(&mut framebuffer, x, y);  // transparent pixels are skipped
+//! let apple = sheet.to_rle()?;
+//! // apple[0].draw(&mut framebuffer, x, y);  // transparent pixels are skipped
 //! # Ok::<(), snake::sprites::SpriteError>(())
 //! ```
 
@@ -17,8 +23,11 @@ use std::error::Error;
 use std::fmt;
 use std::io::Cursor;
 
-use crate::assets;
-use crate::engine::render::{Palette, Renderer};
+use crate::engine::assets;
+pub use crate::engine::render::RleError;
+use crate::engine::render::{
+    CT_NEXT, CT_OPAQUE, CT_SKIP, MAX_RUN, Palette, Renderer, RleDecoder, TRANSPARENT,
+};
 
 /// Bytes per pixel in a decoded sprite.
 const CHANNELS: usize = 4;
@@ -36,6 +45,8 @@ pub enum SpriteError {
     DimensionsMismatch { width: usize, height: usize },
     /// `sprite_count` must be non-zero.
     NoSprites,
+    /// The embedded data is not a valid RLE sprite stream.
+    Rle(RleError),
 }
 
 impl fmt::Display for SpriteError {
@@ -53,6 +64,7 @@ impl fmt::Display for SpriteError {
                 "sprite strip is {width}x{height}; it must be exactly size_x * sprite_count wide and size_y tall"
             ),
             SpriteError::NoSprites => write!(f, "sprite_count must be at least 1"),
+            SpriteError::Rle(err) => write!(f, "invalid RLE sprite data: {err}"),
         }
     }
 }
@@ -62,6 +74,12 @@ impl Error for SpriteError {}
 impl From<png::DecodingError> for SpriteError {
     fn from(err: png::DecodingError) -> SpriteError {
         SpriteError::Png(err)
+    }
+}
+
+impl From<RleError> for SpriteError {
+    fn from(err: RleError) -> SpriteError {
+        SpriteError::Rle(err)
     }
 }
 
@@ -101,11 +119,11 @@ impl Sprite {
         &self.indices
     }
 
-    /// Blit the sprite onto a renderer (e.g. the framebuffer) at `(x, y)`,
-    /// clipped to the screen. Transparent pixels are skipped.
-    pub fn draw(&self, r: &mut impl Renderer, x: i32, y: i32) {
-        r.draw_image(x, y, &self.indices, self.width, self.height);
-    }
+    // /// Blit the sprite onto a renderer (e.g. the framebuffer) at `(x, y)`,
+    // /// clipped to the screen. Transparent pixels are skipped.
+    // pub fn draw(&self, r: &mut impl Renderer, x: i32, y: i32) {
+    //     r.draw_image(x, y, &self.indices, self.width, self.height);
+    // }
 }
 
 /// A horizontal strip of equal-sized sprites decoded from one PNG.
@@ -198,6 +216,169 @@ impl SpriteSheet {
     pub fn frame_size(&self) -> (usize, usize) {
         (self.frame_width, self.frame_height)
     }
+
+    /// Encode every frame as an [`RleSprite`], so the game can draw them with
+    /// [`RleSprite::draw`] (which blits only opaque runs through
+    /// `Renderer::draw_rle_image`) instead of the raw-index [`Sprite`] blit.
+    /// The conversion runs once at load time; each encoded frame keeps its
+    /// opaque-pixel bounding box.
+    pub fn to_rle(&self) -> Result<Vec<RleSprite>, RleError> {
+        self.frames.iter().map(RleSprite::from_sprite).collect()
+    }
+}
+
+/// Encode palette-indexed pixels (row-major, one byte per pixel) into the RLE
+/// stream decoded by [`RleSprite`]. `width` is the row stride and is only used
+/// to know where rows wrap; it is not stored in the output.
+///
+/// The stream is a sequence of control bytes of the form `xx yyyyyy`: the two
+/// type bits `xx` select one of three commands and the six low bits carry a
+/// count `n` from 0 to 63.
+///
+/// * type `00` is followed by `n` opaque palette indices on the current scan
+///   line;
+/// * type `01` skips `n` pixels as transparent;
+/// * type `10` skips `n` scan lines and resumes at the first pixel of that
+///   line, so count 1 switches to the next scan line.
+///
+/// The sprite ends when the byte array does, so there is no size field. Runs
+/// longer than 63 are split into several control bytes; fully transparent
+/// scan lines are folded into a single `10` skip and trailing transparent
+/// pixels are omitted (the line's terminating `10` skip implies them), so the
+/// decoded size is the bounding box of the opaque pixels.
+pub fn rle_encode(indices: &[u8], width: usize) -> Vec<u8> {
+    let mut out = Vec::new();
+    if width == 0 {
+        return out;
+    }
+    let height = indices.len() / width;
+    let mut row = 0usize; // last scan line already emitted
+
+    for y in 0..height {
+        let o = y * width;
+        if indices[o..o + width].iter().all(|&p| p == TRANSPARENT) {
+            continue;
+        }
+        // Jump to this line, folding any empty lines in between into one skip.
+        let mut skip = y - row;
+        while skip >= MAX_RUN {
+            out.push(CT_NEXT | MAX_RUN as u8);
+            skip -= MAX_RUN;
+        }
+        if skip > 0 {
+            out.push(CT_NEXT | skip as u8);
+        }
+        row = y;
+
+        let mut x = 0;
+        while x < width {
+            if indices[o + x] == TRANSPARENT {
+                let mut end = x;
+                while end < width && indices[o + end] == TRANSPARENT {
+                    end += 1;
+                }
+                if end == width {
+                    break; // trailing transparent pixels: implied by the `10` skip
+                }
+                let mut n = end - x;
+                while n >= MAX_RUN {
+                    out.push(CT_SKIP | MAX_RUN as u8);
+                    n -= MAX_RUN;
+                }
+                if n > 0 {
+                    out.push(CT_SKIP | n as u8);
+                }
+                x = end;
+            } else {
+                let mut end = x;
+                while end < width && indices[o + end] != TRANSPARENT {
+                    end += 1;
+                }
+                let mut n = end - x;
+                while n >= MAX_RUN {
+                    out.push(CT_OPAQUE | MAX_RUN as u8);
+                    out.extend_from_slice(&indices[o + x..o + x + MAX_RUN]);
+                    x += MAX_RUN;
+                    n -= MAX_RUN;
+                }
+                if n > 0 {
+                    out.push(CT_OPAQUE | n as u8);
+                    out.extend_from_slice(&indices[o + x..o + x + n]);
+                    x += n;
+                }
+            }
+        }
+    }
+    out
+}
+
+/// A sprite whose pixels are stored as an RLE stream (see [`rle_encode`])
+/// instead of one raw byte per pixel. The stream is self-terminating, so
+/// `width`/`height` are the bounding box of the opaque pixels rather than a
+/// fixed frame size; drawing walks the stream and blits each opaque run, which
+/// never touches the transparent pixels at all.
+#[derive(Clone)]
+pub struct RleSprite {
+    data: Vec<u8>,
+    width: usize,
+    height: usize,
+}
+
+impl RleSprite {
+    /// Parse and validate an RLE stream, computing the opaque-pixel bounding
+    /// box. Rejects undefined control types (`11`) and opaque runs that run
+    /// past the end of the data.
+    pub fn new(data: Vec<u8>) -> Result<RleSprite, RleError> {
+        let mut decoder = RleDecoder::new(&data);
+        let mut width = 0;
+        let mut height = 0;
+        while let Some(run) = decoder.next_run()? {
+            width = width.max(run.x + run.indices.len());
+            height = height.max(run.y + 1);
+        }
+        Ok(RleSprite {
+            data,
+            width,
+            height,
+        })
+    }
+
+    /// Load a pre-encoded RLE sprite from the embedded `assets/` directory.
+    pub fn load(name: &str) -> Result<RleSprite, SpriteError> {
+        let data =
+            assets::load(name).ok_or_else(|| SpriteError::AssetNotFound(name.to_string()))?;
+        RleSprite::new(data.to_vec()).map_err(SpriteError::Rle)
+    }
+
+    /// Encode a palette-indexed sprite into RLE.
+    pub fn from_sprite(sprite: &Sprite) -> Result<RleSprite, RleError> {
+        RleSprite::new(rle_encode(sprite.pixels(), sprite.width()))
+    }
+
+    /// Width of the opaque-pixel bounding box inferred from the stream.
+    #[inline]
+    pub fn width(&self) -> usize {
+        self.width
+    }
+
+    /// Height of the opaque-pixel bounding box inferred from the stream.
+    #[inline]
+    pub fn height(&self) -> usize {
+        self.height
+    }
+
+    /// The raw RLE stream.
+    #[inline]
+    pub fn data(&self) -> &[u8] {
+        &self.data
+    }
+
+    /// Blit the sprite onto a renderer (e.g. the framebuffer) at `(x, y)`,
+    /// clipped to the screen. Only opaque runs are touched, so transparent
+    /// pixels never write to the target.
+    pub fn draw(&self, r: &mut impl Renderer, x: i32, y: i32) {
+        r.draw_rle_image(x, y, &self.data);
+    }
 }
 
 /// A fully decoded RGBA8 PNG.
@@ -245,7 +426,7 @@ fn decode_png(data: &[u8]) -> Result<RgbaImage, SpriteError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::engine::render::{Color, Framebuffer, TRANSPARENT};
+    use crate::engine::render::{CT_COUNT, Color, Framebuffer, TRANSPARENT};
 
     fn apple_sheet() -> SpriteSheet {
         SpriteSheet::load("apple_rotate.png", 24, 24, 12).expect("apple sheet loads")
@@ -338,17 +519,111 @@ mod tests {
     }
 
     #[test]
-    fn sprite_draws_onto_the_framebuffer() {
-        let sheet = apple_sheet();
-        let apple = sheet.sprite(0).unwrap();
+    fn rle_encode_exact_stream() {
+        // Row 0: A . B, row 1 empty, row 2: C . .  (3x3 frame).
+        let indices = [
+            1,
+            TRANSPARENT,
+            2,
+            TRANSPARENT,
+            TRANSPARENT,
+            TRANSPARENT,
+            3,
+            TRANSPARENT,
+            TRANSPARENT,
+        ];
+        let out = rle_encode(&indices, 3);
+        assert_eq!(out, vec![0x01, 1, 0x41, 0x01, 2, 0x82, 0x01, 3]);
+        let sprite = RleSprite::new(out).unwrap();
+        assert_eq!(sprite.width(), 3);
+        assert_eq!(sprite.height(), 3);
+    }
+
+    #[test]
+    fn rle_hand_written_stream_decodes_size_and_pixels() {
+        // Two single-pixel runs at (2,0) and (3,0).
+        let stream = vec![0x42, 0x01, 3, 0x01, 4];
+        let sprite = RleSprite::new(stream).unwrap();
+        assert_eq!(sprite.width(), 4);
+        assert_eq!(sprite.height(), 1);
+
         let mut fb = Framebuffer::new();
         fb.clear(Color::BLACK);
-        apple.draw(&mut fb, 10, 10);
-        // The apple is opaque somewhere in its frame; the top-left corner of
-        // the drawn region must differ from the background where the sprite
-        // covers it. Check the exact corner is transparent-safe (never panics)
-        // and that at least one pixel in the frame changed.
-        let changed = fb.pixels().iter().any(|&p| p != 0);
-        assert!(changed, "sprite must paint non-background pixels");
+        sprite.draw(&mut fb, 0, 0);
+        assert_eq!(fb.pixels()[0], 0);
+        assert_eq!(fb.pixels()[1], 0);
+        assert_eq!(fb.pixels()[2], 3);
+        assert_eq!(fb.pixels()[3], 4);
+    }
+
+    #[test]
+    fn rle_long_runs_split_into_max_count() {
+        let width = 100;
+        let indices = vec![7u8; width];
+        let out = rle_encode(&indices, width);
+        assert_eq!(out.len(), 2 + width);
+        assert_eq!(out[0] >> 6, 0);
+        assert_eq!(out[0] & CT_COUNT, MAX_RUN as u8);
+        assert_eq!(out[64] >> 6, 0);
+        assert_eq!(out[64] & CT_COUNT, (width - MAX_RUN) as u8);
+        let sprite = RleSprite::new(out).unwrap();
+        assert_eq!(sprite.width(), 100);
+        assert_eq!(sprite.height(), 1);
+    }
+
+    #[test]
+    fn rle_empty_rows_are_merged_into_one_skip() {
+        // Row 0 content, rows 1-2 empty, row 3 content.
+        let width = 2;
+        let indices = [
+            5,
+            6,
+            TRANSPARENT,
+            TRANSPARENT,
+            TRANSPARENT,
+            TRANSPARENT,
+            8,
+            9,
+        ];
+        let out = rle_encode(&indices, width);
+        assert_eq!(out, vec![0x02, 5, 6, 0x83, 0x02, 8, 9]);
+        let sprite = RleSprite::new(out).unwrap();
+        assert_eq!(sprite.width(), 2);
+        assert_eq!(sprite.height(), 4);
+    }
+
+    #[test]
+    fn rle_trailing_transparent_pixels_are_omitted() {
+        let indices = [9, TRANSPARENT, TRANSPARENT];
+        let out = rle_encode(&indices, 3);
+        assert_eq!(out, vec![0x01, 9]);
+        let sprite = RleSprite::new(out).unwrap();
+        assert_eq!(sprite.width(), 1);
+        assert_eq!(sprite.height(), 1);
+    }
+
+    #[test]
+    fn rle_all_transparent_encodes_empty() {
+        let out = rle_encode(&[TRANSPARENT; 12], 3);
+        assert!(out.is_empty());
+        let sprite = RleSprite::new(out).unwrap();
+        assert_eq!(sprite.width(), 0);
+        assert_eq!(sprite.height(), 0);
+    }
+
+    #[test]
+    fn rle_malformed_streams_are_rejected() {
+        // Opaque run claims 5 bytes but only 2 remain.
+        let truncated = vec![0x05, 1, 2];
+        assert!(matches!(
+            RleSprite::new(truncated),
+            Err(RleError::TruncatedRun { .. })
+        ));
+        // Undefined control type 11.
+        let reserved = vec![0xC0, 1];
+        assert!(matches!(
+            RleSprite::new(reserved),
+            Err(RleError::ReservedControlType { .. })
+        ));
     }
 }

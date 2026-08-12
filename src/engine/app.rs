@@ -1,9 +1,9 @@
 use crate::engine::font;
 use crate::engine::present::Presenter;
 use crate::engine::render::{Color, Framebuffer, Renderer};
+use crate::engine::sprites::{RleSprite, SpriteSheet};
 use crate::engine::start::{Start, State};
 use crate::game::{self, Direction, PLAYERS};
-use crate::sprites::SpriteSheet;
 
 use miniquad::{EventHandler, KeyCode, KeyMods};
 
@@ -150,7 +150,7 @@ pub struct Stage {
     start: Start,
     framebuffer: Framebuffer,
     presenter: Presenter,
-    apple: SpriteSheet,
+    apple: Vec<RleSprite>,
 
     // Timing.
     frame_start: f64,
@@ -188,7 +188,9 @@ impl Stage {
     pub fn new() -> Stage {
         let now = miniquad::date::now();
         let apple = SpriteSheet::load(APPLE_SPRITE, APPLE_FRAME_W, APPLE_FRAME_H, APPLE_FRAMES)
-            .expect("embedded apple sprite sheet must load");
+            .expect("embedded apple sprite sheet must load")
+            .to_rle()
+            .expect("apple frames must encode to RLE");
         Stage {
             start: Start::new(),
             framebuffer: Framebuffer::new(),
@@ -267,7 +269,7 @@ impl Stage {
     /// Drain device-aware gamepad events (Android). No-op on desktop.
     #[cfg(target_os = "android")]
     fn drain_player_input(&mut self) {
-        crate::input::drain_into(|event| {
+        crate::engine::input::drain_into(|event| {
             if let Some(input) = android_keycode_to_input(event.keycode) {
                 self.apply_input(event.player, event.keycode as u32, input, event.down);
             }

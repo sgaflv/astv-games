@@ -86,7 +86,7 @@ tv-mute:
 	adb shell input keyevent KEYCODE_VOLUME_MUTE
 
 tv-volume:
-	adb shell cmd media_session volume --stream 3 --set 13    
+	adb shell cmd media_session volume --stream 3 --set 10    
     
 log:
     adb logcat
