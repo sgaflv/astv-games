@@ -447,9 +447,13 @@ mod tests {
         let mut fb = Framebuffer::new();
         fb.zero();
         snake.draw(&mut fb, 65536);
+        let palette = fb.palette();
         fb.pixels()
-            .chunks_exact(3)
-            .map(|p| [p[0], p[1], p[2]])
+            .iter()
+            .map(|&i| {
+                let c = palette.rgb(i);
+                [c.r, c.g, c.b]
+            })
             .collect()
     }
 

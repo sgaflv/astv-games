@@ -303,7 +303,7 @@ mod tests {
         // the drawn region must differ from the background where the sprite
         // covers it. Check the exact corner is transparent-safe (never panics)
         // and that at least one pixel in the frame changed.
-        let changed = fb.pixels().chunks_exact(3).any(|p| p != [0, 0, 0]);
+        let changed = fb.pixels().iter().any(|&p| p != 0);
         assert!(changed, "sprite must paint non-background pixels");
     }
 }

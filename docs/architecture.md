@@ -13,10 +13,11 @@ Game logic (integer coords, fixed 60 Hz timestep)
 Renderer trait (clear / fill_rect / fill_circle / draw_text)
       │
       ▼
-480×270 RGB8 CPU framebuffer (388,800 B ≈ 380 KiB)
+480×270 indexed CPU framebuffer (129,600 B ≈ 127 KiB, one palette index/pixel)
       │
       ▼
-one texture upload + one fullscreen quad (nearest-neighbour, integer scale)
+one index texture upload + one fullscreen quad; the fragment shader looks
+each index up in a 256×1 palette texture (nearest-neighbour, integer scale)
       │
       ▼
 physical display (1920×1080 ×4, 3840×2160 ×8, or letterboxed)
@@ -34,9 +35,9 @@ physical display (1920×1080 ×4, 3840×2160 ×8, or letterboxed)
 | `src/game.rs`                 | `Game`: two snakes, shared food, tick clock, per-player input, drawing |
 | `src/snake.rs`                | Reusable `Snake`: body, direction, input queue, growth, drawing |
 | `src/input.rs`                | Device-aware Android gamepad queue + `surfaceOnPlayerKey` JNI export |
-| `src/render.rs`               | `Renderer` trait, `Color`, `Framebuffer`, `integer_scale`   |
+| `src/render.rs`               | `Renderer` trait, `Color`, `Palette`, indexed `Framebuffer`, `integer_scale` |
 | `src/font.rs`                 | 8x8 bitmap font blitting (font8x8), `text_width`            |
-| `src/present.rs`              | `Presenter`: GL texture upload + integer-scaled fullscreen quad |
+| `src/present.rs`              | `Presenter`: index + palette texture upload, palette-lookup shader, integer-scaled fullscreen quad |
 | `src/app.rs`                  | `Stage`: miniquad `EventHandler`, input, pacing, HUD        |
 | `android/java/.../MainActivity.java` | Android activity glue (SurfaceView + lifecycle + gamepad device->player routing) |
 | `android/java/quad_native/QuadNative.java` | JNI declarations matched by miniquad 0.4 + `surfaceOnPlayerKey` |
@@ -78,8 +79,12 @@ physical display (1920×1080 ×4, 3840×2160 ×8, or letterboxed)
 ## Rendering (`src/render.rs`, `src/font.rs`)
 
 * `Renderer` trait exposes only integer, top-left-origin calls, including
-  `draw_image` for alpha-composited RGBA8 blits.
-* `Framebuffer` is a 480x270 RGB8 `Vec<u8>`; all shapes are clipped.
+  `draw_image` for RGBA8 blits.
+* `Framebuffer` is a 480x270 indexed `Vec<u8>`: each pixel is one 8-bit index
+  into a 256-entry `Palette` (a third of the old RGB8 buffer). The game's
+  colors are pinned at fixed palette indices; `Palette::index_of` finds the
+  exact entry (or the nearest entry, used by RGBA sprite blits until sprites
+  are palette-indexed). All shapes are clipped.
 * `integer_scale(w, h)` returns the largest integer scale that fits:
   `min(w/480, h/270).max(1)`.
 * Text uses the public-domain `font8x8::legacy::BASIC_LEGACY` bitmap font
@@ -100,9 +105,18 @@ physical display (1920×1080 ×4, 3840×2160 ×8, or letterboxed)
 
 ## Presentation (`src/present.rs`)
 
-* One 480x270 RGB8 `TextureId`, `FilterMode::Nearest`, no mipmaps.
-* Per frame: `texture_update(framebuffer)` then a single fullscreen quad with
-  vertex positions recomputed on resize to center the integer-scaled viewport
+* Two textures: a 480x270 index texture (`FilterMode::Nearest`, no mipmaps)
+  holding the framebuffer's 8-bit palette indices, and a 256x1 RGB8 palette
+  texture built once from the default `Palette`.
+* The fragment shader samples the index texture, multiplies the red channel
+  by 255 to recover the index, and looks the color up in the palette texture,
+  so the CPU never expands indices to RGB.
+* The index texture is an 8-bit red (R8) texture where the backend supports it
+  (desktop GL 3+, GLES3). GLES2 (the Android context) and WebGL1 cannot do R8,
+  so there the presenter replicates each index across an RGB8 texture before
+  upload; the shader reads `.r` either way.
+* Per frame: one index texture upload then a single fullscreen quad with vertex
+  positions recomputed on resize to center the integer-scaled viewport
   (letterbox bars blend with the background color).
 * The clear color (13,13,18) matches the game background.
 
