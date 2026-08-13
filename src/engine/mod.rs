@@ -5,5 +5,5 @@ pub mod font;
 pub mod input;
 pub mod present;
 pub mod render;
+pub mod scene;
 pub mod sprites;
-pub mod start;

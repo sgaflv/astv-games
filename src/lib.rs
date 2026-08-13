@@ -1,5 +1,7 @@
 pub mod engine;
 pub mod game;
+pub mod menu;
+pub mod play;
 pub mod snake;
 
 /// Local desktop window size. Independent of the 480x270 logical resolution;
@@ -26,7 +28,9 @@ fn conf() -> miniquad::conf::Conf {
 /// Desktop entry point (x86_64-unknown-linux-gnu etc.).
 #[cfg(not(target_os = "android"))]
 pub fn desktop_main() {
-    miniquad::start(conf(), || Box::new(engine::app::Stage::new()));
+    miniquad::start(conf(), || {
+        Box::new(engine::app::Stage::new(Box::new(menu::Menu::new())))
+    });
 }
 
 /// Android entry point, called from the Java glue (`quad_main`), which in turn
@@ -35,5 +39,7 @@ pub fn desktop_main() {
 #[unsafe(no_mangle)]
 pub extern "C" fn quad_main() {
     engine::input::init();
-    miniquad::start(conf(), || Box::new(engine::app::Stage::new()));
+    miniquad::start(conf(), || {
+        Box::new(engine::app::Stage::new(Box::new(menu::Menu::new())))
+    });
 }
