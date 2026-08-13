@@ -1,4 +1,4 @@
-use crate::engine::render;
+use crate::engine::{color, render};
 
 use miniquad::{
     Bindings, BufferId, BufferLayout, BufferSource, BufferType, BufferUsage, FilterMode,
@@ -140,7 +140,7 @@ impl Presenter {
             TextureSource::Empty,
             TextureParams {
                 kind: TextureKind::Texture2D,
-                width: render::PALETTE_SIZE as u32,
+                width: color::PALETTE_SIZE as u32,
                 height: 1,
                 format: TextureFormat::RGB8,
                 wrap: TextureWrap::Clamp,
@@ -153,7 +153,7 @@ impl Presenter {
         );
         // The palette is fixed at construction and matches the framebuffer's
         // default palette, so this upload happens once.
-        ctx.texture_update(palette_texture, render::Palette::default().bytes());
+        ctx.texture_update(palette_texture, color::Palette::default().bytes());
 
         let shader = ctx
             .new_shader(

@@ -15,17 +15,11 @@ fn dump(fb: &Framebuffer, label: &str, x0: i32, y0: i32) {
 
 fn main() {
     let mut fb = Framebuffer::new();
-    fb.clear(snake::engine::render::Color::BLACK);
+    fb.clear(snake::engine::color::Color::BLACK);
     // Draw each glyph starting on a fresh 8x8 block, spaced 2px apart.
     for (i, ch) in ['F', '9', 'b', 'd', '6', 'p'].iter().enumerate() {
         let x = i as i32 * 10;
-        fb.draw_text(
-            x,
-            0,
-            1,
-            snake::engine::render::Color::WHITE,
-            &ch.to_string(),
-        );
+        fb.draw_text(x, 0, 1, snake::engine::color::Color::WHITE, &ch.to_string());
     }
     dump(&fb, "F", 0, 0);
     dump(&fb, "9", 10, 0);

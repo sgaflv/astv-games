@@ -1,4 +1,5 @@
-use crate::engine::render::{Color, Framebuffer, Renderer};
+use crate::engine::color::Color;
+use crate::engine::render::{Framebuffer, Renderer};
 
 /// 8x8 bitmap font glyphs for U+0000..U+007F (public domain font8x8).
 use font8x8::legacy::BASIC_LEGACY;

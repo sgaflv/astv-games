@@ -23,11 +23,10 @@ use std::error::Error;
 use std::fmt;
 use std::io::Cursor;
 
-use crate::engine::assets;
+use crate::engine::color::TRANSPARENT;
 pub use crate::engine::render::RleError;
-use crate::engine::render::{
-    CT_NEXT, CT_OPAQUE, CT_SKIP, MAX_RUN, Palette, Renderer, RleDecoder, TRANSPARENT,
-};
+use crate::engine::render::{CT_NEXT, CT_OPAQUE, CT_SKIP, MAX_RUN, Renderer, RleDecoder};
+use crate::engine::{assets, color::Palette};
 
 /// Bytes per pixel in a decoded sprite.
 const CHANNELS: usize = 4;
@@ -256,6 +255,7 @@ pub fn rle_encode(indices: &[u8], width: usize) -> Vec<u8> {
 
     for y in 0..height {
         let o = y * width;
+
         if indices[o..o + width].iter().all(|&p| p == TRANSPARENT) {
             continue;
         }
@@ -426,7 +426,10 @@ fn decode_png(data: &[u8]) -> Result<RgbaImage, SpriteError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::engine::render::{CT_COUNT, Color, Framebuffer, TRANSPARENT};
+    use crate::engine::{
+        color::{Color, TRANSPARENT},
+        render::{CT_COUNT, Framebuffer},
+    };
 
     fn apple_sheet() -> SpriteSheet {
         SpriteSheet::load("apple_rotate.png", 24, 24, 12).expect("apple sheet loads")

@@ -1,6 +1,7 @@
+use crate::engine::color::Color;
 use crate::engine::font;
 use crate::engine::present::Presenter;
-use crate::engine::render::{Color, Framebuffer, Renderer};
+use crate::engine::render::{Framebuffer, Renderer};
 use crate::engine::sprites::{RleSprite, SpriteSheet};
 use crate::engine::start::{Start, State};
 use crate::game::{Direction, PLAYERS, TARGET_FRAMES};
@@ -8,7 +9,6 @@ use crate::game::{Direction, PLAYERS, TARGET_FRAMES};
 use miniquad::{EventHandler, KeyCode, KeyMods};
 
 use std::fmt::Write as _;
-use std::time::Duration;
 
 const FRAME_TIME: f64 = 1.0 / TARGET_FRAMES as f64;
 const MAX_FRAME_TIME: f64 = 0.25;

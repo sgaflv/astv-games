@@ -1,5 +1,5 @@
 use crate::{
-    engine::render::{Color, Renderer},
+    engine::{color::Color, render::Renderer},
     game::SIM_FRAMES,
 };
 
