@@ -220,6 +220,8 @@ impl Stage {
             match self.start.state {
                 State::Menu => self.menu_input(input),
                 State::Playing => self.game_input(player, input),
+                State::GameOver => todo!(),
+                State::ScoreScreen => todo!(),
             }
         } else if self.held_keys[player][idx] == Some(key) {
             self.held_keys[player][idx] = None;
@@ -311,6 +313,8 @@ impl Stage {
                     );
                 }
             }
+            State::GameOver => todo!(),
+            State::ScoreScreen => todo!(),
         }
 
         // end time measure

@@ -10,13 +10,13 @@
 //! bounding box of the opaque pixels rather than a fixed frame size.
 //!
 //! ```no_run
-//! use snake::sprites::SpriteSheet;
+//! use snake::engine::sprites::SpriteSheet;
 //!
 //! // 12 frames of 24x24 in assets/apple_rotate.png.
 //! let sheet = SpriteSheet::load("apple_rotate.png", 24, 24, 12)?;
 //! let apple = sheet.to_rle()?;
 //! // apple[0].draw(&mut framebuffer, x, y);  // transparent pixels are skipped
-//! # Ok::<(), snake::sprites::SpriteError>(())
+//! # Ok::<(), snake::engine::sprites::SpriteError>(())
 //! ```
 
 use std::error::Error;

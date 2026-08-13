@@ -449,7 +449,7 @@ mod tests {
     fn draw_head_pixels(snake: &Snake) -> Vec<[u8; 3]> {
         let mut fb = Framebuffer::new();
         fb.zero();
-        snake.draw(&mut fb, 65536);
+        snake.draw(&mut fb, SIM_FRAMES);
         let palette = fb.palette();
         fb.pixels()
             .iter()
@@ -530,17 +530,17 @@ mod tests {
 
     #[test]
     fn interp_endpoints_and_midpoints() {
-        // alpha = 0 stays at the start, alpha = 65536 reaches the end.
+        // frame 0 stays at the start, SIM_FRAMES reaches the end.
         assert_eq!(interp(240, 252, 0), 240);
-        assert_eq!(interp(240, 252, 65536), 252);
+        assert_eq!(interp(240, 252, SIM_FRAMES), 252);
         // Half way rounds to the midpoint.
-        assert_eq!(interp(240, 252, 65536 / 2), 246);
+        assert_eq!(interp(240, 252, SIM_FRAMES / 2), 246);
         // Result depends on the anchor, not just the offset: screen coords in
         // 0..=480 must never collapse toward (0,0).
-        assert_eq!(interp(276, 288, 2185), 276);
-        assert_eq!(interp(0, 480, 32768), 240);
+        assert_eq!(interp(276, 288, 1), 276);
+        assert_eq!(interp(0, 480, SIM_FRAMES / 2), 240);
         // Negative offsets interpolate correctly too.
-        assert_eq!(interp(288, 276, 65536 / 2), 282);
+        assert_eq!(interp(288, 276, SIM_FRAMES / 2), 282);
     }
 
     #[test]
@@ -554,7 +554,7 @@ mod tests {
         // At the very start of a tick the segment still sits in its previous cell.
         assert_eq!(segment_screen(segment, 0), (x0, y0));
         // At the very end it reaches its current cell.
-        assert_eq!(segment_screen(segment, 65536), (x1, y1));
+        assert_eq!(segment_screen(segment, SIM_FRAMES), (x1, y1));
         // Both anchors are on the board, not at the window origin.
         assert!(x0 >= BOARD_X && x1 >= BOARD_X);
         assert!(y0 >= BOARD_Y && y1 >= BOARD_Y);

@@ -8,6 +8,8 @@ use crate::game::{Game, PLAYERS};
 pub enum State {
     Menu,
     Playing,
+    GameOver,
+    ScoreScreen,
 }
 
 /// The runnable game plus the session state a new game begins with. A

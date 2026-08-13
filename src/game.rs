@@ -302,7 +302,7 @@ mod tests {
         ];
         game.snakes[1].direction = Direction::Left;
 
-        for _ in 0..TARGET_FRAMES {
+        for _ in 0..SIM_FRAMES {
             game.step();
         }
 
@@ -336,7 +336,7 @@ mod tests {
     #[test]
     fn both_snakes_move_in_lockstep() {
         let mut game = Game::new(2);
-        for _ in 0..TARGET_FRAMES {
+        for _ in 0..SIM_FRAMES {
             game.step();
         }
         assert_eq!(head(&game, 0), Cell { x: 4, y: 0 });
@@ -348,7 +348,7 @@ mod tests {
         let mut game = Game::new(2);
         // Steer snake 0 toward the nearest food; snake 1 wanders.
         let mut reached = false;
-        for _ in 0..TARGET_FRAMES * 300 {
+        for _ in 0..SIM_FRAMES * 300 {
             let h = head(&game, 0);
             let (fx, fy) = game
                 .foods()
@@ -394,7 +394,7 @@ mod tests {
         let mut game = Game::new(2);
         game.queue_direction(0, Direction::Down);
         game.queue_direction(1, Direction::Up);
-        for _ in 0..TARGET_FRAMES {
+        for _ in 0..SIM_FRAMES {
             game.step();
         }
         assert_eq!(head(&game, 0), Cell { x: 3, y: 1 });
@@ -438,7 +438,7 @@ mod tests {
         ];
         game.snakes[1].direction = Direction::Right;
 
-        for _ in 0..TARGET_FRAMES {
+        for _ in 0..SIM_FRAMES {
             game.step();
         }
 
@@ -487,7 +487,7 @@ mod tests {
             .collect();
         game.snakes[1].direction = Direction::Right;
 
-        for _ in 0..TARGET_FRAMES {
+        for _ in 0..SIM_FRAMES {
             game.step();
         }
 
@@ -535,7 +535,7 @@ mod tests {
             .collect();
         game.snakes[1].direction = Direction::Right;
 
-        for _ in 0..TARGET_FRAMES {
+        for _ in 0..SIM_FRAMES {
             game.step();
         }
 
@@ -576,7 +576,7 @@ mod tests {
         ];
         game.snakes[0].direction = Direction::Right;
 
-        for _ in 0..TARGET_FRAMES {
+        for _ in 0..SIM_FRAMES {
             game.step();
         }
 
@@ -615,7 +615,7 @@ mod tests {
         ];
         game.snakes[1].direction = Direction::Left;
 
-        for _ in 0..TARGET_FRAMES {
+        for _ in 0..SIM_FRAMES {
             game.step();
         }
 
@@ -654,7 +654,7 @@ mod tests {
             .collect();
         game.snakes[1].direction = Direction::Right;
 
-        for _ in 0..TARGET_FRAMES {
+        for _ in 0..SIM_FRAMES {
             game.step();
         }
 
