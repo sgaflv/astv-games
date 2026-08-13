@@ -113,7 +113,7 @@ pub fn parse(text: &str) -> Option<Level> {
                     Tile::Empty
                 }
                 '.' | ' ' => Tile::Empty,
-                _ => return None,
+                _ => Tile::Empty,
             };
             level.set_tile(x, y, tile);
         }
@@ -174,10 +174,18 @@ mod tests {
         )
     }
 
-    /// Supported like `Game::supported`: solid ground below, or a ladder or
-    /// railing in the current cell or the one above.
+    fn is_ladder(tiles: &[Tile], x: i32, y: i32) -> bool {
+        tile_at(tiles, x, y) == Some(Tile::Ladder)
+    }
+
+    /// Supported like `Game::supported`: solid ground below, a ladder directly
+    /// below (standing on a ladder's top), or a ladder or railing in the
+    /// current cell or the one above.
     fn supported(tiles: &[Tile], x: i32, y: i32) -> bool {
-        is_solid(tiles, x, y + 1) || is_lr(tiles, x, y) || is_lr(tiles, x, y - 1)
+        is_solid(tiles, x, y + 1)
+            || is_lr(tiles, x, y)
+            || is_lr(tiles, x, y - 1)
+            || is_ladder(tiles, x, y + 1)
     }
 
     /// Drop one cell at a time until supported or on the bottom row, exactly
@@ -190,9 +198,12 @@ mod tests {
         y
     }
 
+    /// `(rest cells, cells ever occupied)`, returned by the BFS below.
+    type Reach = (HashSet<(i32, i32)>, HashSet<(i32, i32)>);
+
     /// All reachable rest cells plus every cell the actor ever occupies
     /// (rest positions and cells passed through while falling).
-    fn closure(tiles: &[Tile], spawn: (i32, i32)) -> (HashSet<(i32, i32)>, HashSet<(i32, i32)>) {
+    fn closure(tiles: &[Tile], spawn: (i32, i32)) -> Reach {
         let (sx, sy) = spawn;
         let sy = fall(tiles, sx, sy);
         let mut seen = HashSet::new();
@@ -201,7 +212,10 @@ mod tests {
         visited.insert((sx, sy));
         let mut q = VecDeque::from([(sx, sy)]);
         while let Some((x, y)) = q.pop_front() {
-            if is_lr(tiles, x, y - 1) {
+            // Climb up into a ladder/railing above. Climbing stops at the top
+            // rung: the actor never leaves the ladder into the open cell above
+            // it.
+            if y > 0 && is_lr(tiles, x, y - 1) {
                 let nxt = (x, y - 1);
                 if seen.insert(nxt) {
                     visited.insert(nxt);

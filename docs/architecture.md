@@ -126,23 +126,28 @@ below). The app package selects between them.
 The `gibbon` package is a single-player Lode Runner-style game: run and climb a
 20x11 grid, collect every fruit before the two guards catch you.
 
-* Fixed simulation step: 60 Hz, the gibbon acts every `SIM_FRAMES = 10` frames
-  (6 moves per second); guards advance every 2 gibbon moves.
+* Fixed simulation step: 60 Hz, and every actor (the gibbon and the guards)
+  crosses one cell every `SIM_FRAMES = 10` frames (6 cells per second), so
+  they all move at the same constant speed.
 * Tiles: `Wood` (#) and `Brick` (*) are solid, `Ladder` (|) and `Railing` (-)
   are climbable, `Fruit` (@) is collectible, everything else is empty.
 * Movement: left/right into any non-solid cell; up/down only into a ladder or
-  railing. An actor is *supported* when the cell below is solid, or it stands
-  on (or hangs from) a ladder/railing; otherwise gravity pulls it one cell per
-  tick. Fruits are collected the moment the gibbon passes through their cell,
-  including mid-fall.
-* Digging: holding Down + Left/Right (edge-triggered, once per combination)
-  digs the wood tile diagonally below, opening a hole for 10 seconds
-  (`DIG_TICKS = 60` moves) before it regrows (deferred while a character stands
-  in it). Only possible while standing on solid ground, and only against wood.
+  railing. Climbing stops at the top rung — an actor never leaves the ladder
+  into the open cell above it. An actor is *supported* when the cell below is
+  solid, or it stands on (or hangs from) a ladder/railing; otherwise gravity
+  pulls it one cell per tick. Fruits are collected the moment the gibbon
+  passes through their cell, including mid-fall.
+* Digging: pressing GameA/F1 (down-left) or GameB/F2 (down-right), edge-
+  triggered once per press, digs the wood tile diagonally below, opening a hole
+  for 10 seconds (`DIG_TICKS = 60` moves) before it regrows (deferred while a
+  character stands in it). Only possible while standing on solid ground, and
+  only against wood.
 * Guards chase the gibbon — guard 0 minimizes the vertical distance first,
   guard 1 the horizontal — falling back to a random legal move so they never
-  freeze. Catching the gibbon costs a life (`LIVES = 3`): it respawns at the
-  spawn after a short delay; at 0 lives the game is over.
+  freeze. Because guards move at the same constant speed as the gibbon, a
+  guard chasing a gibbon that runs away keeps a constant distance. Catching the
+  gibbon costs a life (`LIVES = 3`): it respawns at the spawn after a short
+  delay; at 0 lives the game is over.
 * A level clears once the last fruit is collected; the game advances to the
   next embedded level, and completing the final one is a win.
 * Levels are plain text (see `gibbon/src/level.rs`), parsed at build time into

@@ -2,7 +2,7 @@
 //! pause handling, the animated sprite sheets, the HUD and the level
 //! clear / game over overlays.
 
-use crate::game::{CHARACTER_FRAMES, Direction, Game, GameSprites, State, TARGET_FRAMES};
+use crate::game::{Action, CHARACTER_FRAMES, Game, GameSprites, State, TARGET_FRAMES};
 use crate::palette::{self, BG, HUD};
 use engine::color::Palette;
 use engine::font;
@@ -47,10 +47,11 @@ pub struct Playing {
     sim_accumulator: f64,
     paused: bool,
     pause_requested: bool,
-    /// Whether the dig combination (Down + Left/Right) was already active on
-    /// the last update: the dig fires once per new combination, not every
-    /// frame it stays held.
-    dig_prev: bool,
+    /// Whether each dig button was already held on the last update: a dig
+    /// fires once per new press (GameA/F1 digs down-left, GameB/F2 digs
+    /// down-right), not every frame the button stays held.
+    dig_a_prev: bool,
+    dig_b_prev: bool,
 }
 
 impl Playing {
@@ -83,7 +84,8 @@ impl Playing {
             sim_accumulator: 0.0,
             paused: false,
             pause_requested: false,
-            dig_prev: false,
+            dig_a_prev: false,
+            dig_b_prev: false,
         }
     }
 
@@ -136,33 +138,41 @@ impl Scene for Playing {
 
         let game = self.game.as_mut().expect("game started before it ran");
 
-        // The held direction drives the gibbon: it keeps walking, climbing or
-        // hanging while the key stays down.
+        // Pressing a direction sets the gibbon's latched movement direction:
+        // it keeps walking, climbing or hanging in that direction even after
+        // the key is released, until the way is blocked. Releasing all keys
+        // does not stop it, so the game is only told about new directions.
         let up = input.held(0, Input::Up);
         let down = input.held(0, Input::Down);
         let left = input.held(0, Input::Left);
         let right = input.held(0, Input::Right);
-        let dir = if up && !down {
-            Some(Direction::Up)
-        } else if down && !up {
-            Some(Direction::Down)
-        } else if left && !right {
-            Some(Direction::Left)
-        } else if right && !left {
-            Some(Direction::Right)
-        } else {
-            None
-        };
-        game.set_dir(dir);
 
-        // Dig fires on the edge of the Down+Left/Right combination: the first
-        // update where both are held, once per combination.
-        let dig = down && (left || right);
-        if dig && !self.dig_prev {
-            let side = if right && !left { 1 } else { -1 };
-            game.dig(side);
+        if up && !down {
+            game.set_action(Some(Action::Up));
+        } else if down && !up {
+            game.set_action(Some(Action::Down));
+        } else if left && !right {
+            game.set_action(Some(Action::Left));
+        } else if right && !left {
+            game.set_action(Some(Action::Right));
         }
-        self.dig_prev = dig;
+
+        // Dig fires on the press edge of a button: GameA/F1 digs the wooden
+        // tile down-left, GameB/F2 the one down-right. Holding a button does
+        // not dig again.
+        let a = input.held(0, Input::GameA);
+        let b = input.held(0, Input::GameB);
+
+        if a && !self.dig_a_prev {
+            game.dig(-1);
+        }
+
+        if b && !self.dig_b_prev {
+            game.dig(1);
+        }
+
+        self.dig_a_prev = a;
+        self.dig_b_prev = b;
 
         self.sim_accumulator += dt;
 
