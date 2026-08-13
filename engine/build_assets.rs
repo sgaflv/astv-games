@@ -32,23 +32,7 @@ pub fn embed_assets() {
     let mut assets: Vec<(String, String)> = Vec::new();
     if assets_dir.is_dir() {
         println!("cargo:rerun-if-changed={}", assets_dir.display());
-        for entry in fs::read_dir(&assets_dir).expect("read assets dir") {
-            let entry = entry.expect("read assets entry");
-            let path = entry.path();
-            if !path.is_file() {
-                continue;
-            }
-            let name = path
-                .file_name()
-                .expect("asset file name")
-                .to_string_lossy()
-                .to_string();
-            if name.starts_with('.') {
-                continue;
-            }
-            println!("cargo:rerun-if-changed={}", path.display());
-            assets.push((name, path.to_string_lossy().to_string()));
-        }
+        collect_assets(&assets_dir, &mut assets);
     }
     assets.sort();
 
@@ -61,4 +45,28 @@ pub fn embed_assets() {
     generated.push_str("];\n");
 
     fs::write(Path::new(&out_dir).join("assets.rs"), generated).expect("write generated assets");
+}
+
+/// Walk `dir` recursively, collecting every regular file (except dotfiles).
+/// Subdirectories such as `assets/levels/` are therefore embedded too, keyed
+/// by file name.
+fn collect_assets(dir: &Path, assets: &mut Vec<(String, String)>) {
+    for entry in fs::read_dir(dir).expect("read assets dir") {
+        let entry = entry.expect("read assets entry");
+        let path = entry.path();
+        if path.is_dir() {
+            collect_assets(&path, assets);
+        } else if path.is_file() {
+            let name = path
+                .file_name()
+                .expect("asset file name")
+                .to_string_lossy()
+                .to_string();
+            if name.starts_with('.') {
+                continue;
+            }
+            println!("cargo:rerun-if-changed={}", path.display());
+            assets.push((name, path.to_string_lossy().to_string()));
+        }
+    }
 }

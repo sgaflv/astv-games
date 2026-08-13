@@ -6,6 +6,11 @@
 
 include!(concat!(env!("OUT_DIR"), "/assets.rs"));
 
+/// Every embedded asset name, in no particular order.
+pub fn names() -> impl Iterator<Item = &'static str> {
+    ASSETS.iter().map(|(name, _)| *name)
+}
+
 /// Look up an embedded asset by its file name relative to `assets/`.
 pub fn load(name: &str) -> Option<&'static [u8]> {
     ASSETS

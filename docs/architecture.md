@@ -1,6 +1,7 @@
 # Architecture
 
-The game is a lightweight, integer-based 2D snake game rendered into a 480x270
+The workspace holds two lightweight, integer-based 2D games — a two-player
+snake and a single-player Lode Runner-style gibbon — rendered into a 480x270
 CPU framebuffer and presented via miniquad/OpenGL ES with integer
 nearest-neighbour scaling. Bevy has been removed completely.
 
@@ -55,13 +56,17 @@ them.
 | `snake/src/play.rs`           | `Playing` scene: `Game` + fixed-timestep accumulator + pause |
 | `gibbon/Cargo.toml`           | `gibbon` package manifest (engine + rand)                   |
 | `gibbon/build.rs`             | Embeds `gibbon/assets/` via `engine/build_assets.rs`        |
-| `gibbon/src/lib.rs`           | Module wiring (`assets`, `game`, `palette`, `play`, `snake`) |
+| `gibbon/src/lib.rs`           | Module wiring (`assets`, `game`, `level`, `palette`, `play`) |
 | `gibbon/src/assets.rs`        | `gibbon` asset registry: look up embedded assets by file name |
-| `gibbon/assets/apple_rotate.png` | Gibbon's bundled food sprite sheet                      |
-| `gibbon/src/snake.rs`         | Copy of `snake::snake` (the games can diverge)              |
-| `gibbon/src/game.rs`          | Copy of `snake::game` (warm color theme, otherwise identical) |
+| `gibbon/assets/apple_rotate.png` | Gibbon's bundled fruit sprite sheet (12 frames)          |
+| `gibbon/assets/gibbon.png`    | Gibbon character sheet (5 frames: right0, right1, left0, left1, climb) |
+| `gibbon/assets/guard.png`     | Guard character sheet (same 5-frame layout)                 |
+| `gibbon/assets/levels/lvlN.txt` | Text levels parsed into 20x11 grids (`@` fruit, `s` gibbon spawn, `g` guard spawn, `|` ladder, `-` railing, `#` wood, `*` brick) |
+| `gibbon/examples/gen_assets.rs` | Regenerates `gibbon.png` / `guard.png` pixel art          |
+| `gibbon/src/level.rs`         | `Level` + parser (pads/clips, skips levels without a spawn) + a BFS fruit-reachability test |
+| `gibbon/src/game.rs`          | Lode Runner `Game`: gibbon, guards, digging, physics, fruit collection |
 | `gibbon/src/palette.rs`       | `gibbon`'s palette: warm-theme fixed colors over the 16-color default |
-| `gibbon/src/play.rs`          | Copy of `snake::play` (`Playing` scene)                     |
+| `gibbon/src/play.rs`          | `Playing` scene: loads sprites, holds the `Game`, HUD, pause, dig input |
 | `app/Cargo.toml`              | `app` package manifest (engine + miniquad + snake + gibbon) |
 | `app/build.rs`                | Embeds `app/assets/` via `engine/build_assets.rs`           |
 | `app/src/lib.rs`              | Module wiring, `Conf`, `desktop_main()`, Android `quad_main` |
@@ -77,10 +82,9 @@ them.
 
 ## Snake (`snake/src/snake.rs`)
 
-The `snake` package is a self-contained library for the snake game. The
-`gibbon` package is a byte-for-byte copy of the same modules (`gibbon/src/...`)
-so the two games can diverge independently; the app package selects between
-them.
+The `snake` package is a self-contained library for the two-player snake game;
+the `gibbon` package is a separate, single-player Lode Runner-style game (see
+below). The app package selects between them.
 
 * `Snake` is a pure, reusable unit: a body (`Vec<Segment>`), direction, the
   input ring buffer (`MAX_QUEUED_INPUTS = 3`), face state and a body color.
@@ -117,6 +121,38 @@ them.
 * Every frame the framebuffer is fully repainted (clear + grid + snakes + food +
   HUD), so no incremental/dirty tracking is needed.
 
+## Gibbon (`gibbon/src/level.rs`, `gibbon/src/game.rs`)
+
+The `gibbon` package is a single-player Lode Runner-style game: run and climb a
+20x11 grid, collect every fruit before the two guards catch you.
+
+* Fixed simulation step: 60 Hz, the gibbon acts every `SIM_FRAMES = 10` frames
+  (6 moves per second); guards advance every 2 gibbon moves.
+* Tiles: `Wood` (#) and `Brick` (*) are solid, `Ladder` (|) and `Railing` (-)
+  are climbable, `Fruit` (@) is collectible, everything else is empty.
+* Movement: left/right into any non-solid cell; up/down only into a ladder or
+  railing. An actor is *supported* when the cell below is solid, or it stands
+  on (or hangs from) a ladder/railing; otherwise gravity pulls it one cell per
+  tick. Fruits are collected the moment the gibbon passes through their cell,
+  including mid-fall.
+* Digging: holding Down + Left/Right (edge-triggered, once per combination)
+  digs the wood tile diagonally below, opening a hole for 10 seconds
+  (`DIG_TICKS = 60` moves) before it regrows (deferred while a character stands
+  in it). Only possible while standing on solid ground, and only against wood.
+* Guards chase the gibbon — guard 0 minimizes the vertical distance first,
+  guard 1 the horizontal — falling back to a random legal move so they never
+  freeze. Catching the gibbon costs a life (`LIVES = 3`): it respawns at the
+  spawn after a short delay; at 0 lives the game is over.
+* A level clears once the last fruit is collected; the game advances to the
+  next embedded level, and completing the final one is a win.
+* Levels are plain text (see `gibbon/src/level.rs`), parsed at build time into
+  embedded `Level`s. The parser pads short rows, clips oversized ones and
+  skips levels without a gibbon spawn.
+* A `#[cfg(test)]` BFS model in `level.rs` mirrors the game's movement and dig
+  rules to assert that every embedded level has all its fruits reachable
+  (including fruits collected while falling through a dug hole), so broken
+  level files fail the test suite.
+
 ## Rendering (`engine/src/render.rs`, `engine/src/font.rs`)
 
 * `Renderer` trait exposes only integer, top-left-origin calls, including
@@ -152,8 +188,10 @@ them.
   the game draws with: `RleSprite::draw(&mut renderer, x, y)` blits the frame
   through `Renderer::draw_rle_image`, writing only opaque runs so transparent
   pixels never touch the framebuffer.
-* Each game's food uses its own embedded `apple_rotate.png` sheet (12 frames of
-  24x24, one board cell), animated one frame per snake move tick.
+* Each game's fruit uses its own embedded `apple_rotate.png` sheet (12 frames of
+  24x24, one board cell), animated one frame per move tick. Gibbon also embeds
+  its character sheets (`gibbon.png`, `guard.png`: 5 frames each, animated from
+  the walking frames) and its text levels, loaded via `level::load_all()`.
 
 ## Presentation (`engine/src/present.rs`)
 
@@ -183,17 +221,19 @@ them.
   `PendingGame`. Only the chosen game's palette and sprites are in memory at
   any time.
 * The player-count menu holds the instance; Confirm calls `Playing::start(n)`
-  (spawning the snakes) and pushes the `Playing` scene. Back pops the menu,
-  dropping the instance; Back inside the game (`PopToRoot`) drops it too.
+  (spawning the snakes — the gibbon ignores the count, being single-player)
+  and pushes the `Playing` scene. Back pops the menu, dropping the instance;
+  Back inside the game (`PopToRoot`) drops it too.
 * Each game owns a `Palette` built as the classic 16-color default (fixed
   slots 0-15: black, blue, green, cyan, red, magenta, brown, light gray, gray,
   and the bright variants; index 255 = transparent) plus the game's own fixed
-  colors (`BG`, `GRID`, snake colors, `EYE`, `TONGUE`, `HUD`) via
-  `Palette::add`. The games' background colors live in `snake/src/palette.rs`
+  colors via `Palette::add` (snake: `BG`, `GRID`, snake colors, `EYE`, `TONGUE`,
+  `HUD`; gibbon: `BG`, wood/brick/ladder/railing colors, gibbon/guard colors,
+  `HUD`). The games' background colors live in `snake/src/palette.rs`
   (dark blue-black) and `gibbon/src/palette.rs` (warm purple-black), imported
   by the game modules and drawn through `Renderer`.
-* `Playing::new` builds the game palette first, then decodes the food sprite
-  sheet against it (`from_png(&mut palette)`), which appends the sprite's
+* `Playing::new` builds the game palette first, then decodes the sprite sheets
+  against it (`from_png(&mut palette)`), which appends the sprites'
   colors. The `Playing` scene keeps that palette and reports it as
   `Scene::palette()`, so framebuffer indices always match the loaded sprites.
 * `Stage` swaps the framebuffer and presenter palette to `scene.palette()`
@@ -206,8 +246,8 @@ them.
 
 * `Stage` implements `miniquad::EventHandler` (`update`/`draw`) and keeps a
   scene stack. Scene flow (in the `app` package): `GameSelect` (choose `SNAKE`
-  or `GIBBON`) -> `Menu` (1 or 2 player selection for the chosen game) -> the
-  chosen game's `Playing` scene (`snake::play::Playing` or
+  or `GIBBON`) -> `Menu` (player-count selection: 1 or 2 for snake, 1 only for
+  gibbon) -> the chosen game's `Playing` scene (`snake::play::Playing` or
   `gibbon::play::Playing`). Confirming a game on `GameSelect` creates the
   game instance immediately; the `Menu` holds it and starts it on Confirm. The
   selection screens are navigated with the direction keys (selection cycles)

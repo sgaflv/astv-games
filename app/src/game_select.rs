@@ -75,8 +75,12 @@ impl Scene for GameSelect {
                 // decoded sprites stay alive while the player-count menu and
                 // the game run, and are dropped on exit.
                 let game = match GameKind::ALL[self.selection] {
-                    GameKind::Snake => crate::menu::PendingGame::Snake(SnakePlaying::new()),
-                    GameKind::Gibbon => crate::menu::PendingGame::Gibbon(GibbonPlaying::new()),
+                    GameKind::Snake => {
+                        crate::menu::PendingGame::Snake(Box::new(SnakePlaying::new()))
+                    }
+                    GameKind::Gibbon => {
+                        crate::menu::PendingGame::Gibbon(Box::new(GibbonPlaying::new()))
+                    }
                 };
                 SceneAction::Push(Box::new(crate::menu::Menu::new(game)))
             }

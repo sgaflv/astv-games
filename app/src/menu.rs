@@ -24,10 +24,11 @@ const DIM_COLOR: Color = Color::rgb(128, 128, 128);
 /// The game instance for the game currently selected: created at the
 /// game-selection screen, so only the chosen game's palette and sprites occupy
 /// memory. Held here while the player picks the player count, then started and
-/// pushed; dropped when the menu or the game is exited.
+/// pushed; dropped when the menu or the game is exited. Boxed so the enum
+/// stays small (the scenes hold sprite sheets and a game).
 pub enum PendingGame {
-    Snake(SnakePlaying),
-    Gibbon(GibbonPlaying),
+    Snake(Box<SnakePlaying>),
+    Gibbon(Box<GibbonPlaying>),
 }
 
 impl PendingGame {
@@ -39,16 +40,25 @@ impl PendingGame {
         }
     }
 
+    /// How many players this game supports; the player-count screen shows one
+    /// option per supported player count.
+    fn players(&self) -> usize {
+        match self {
+            PendingGame::Snake(_) => 2,
+            PendingGame::Gibbon(_) => 1,
+        }
+    }
+
     /// Confirm the player count and produce the playing scene.
     fn start(self, players: usize) -> Box<dyn Scene> {
         match self {
             PendingGame::Snake(mut game) => {
                 game.start(players);
-                Box::new(game)
+                Box::new(*game)
             }
             PendingGame::Gibbon(mut game) => {
                 game.start(players);
-                Box::new(game)
+                Box::new(*game)
             }
         }
     }
@@ -79,7 +89,12 @@ impl Scene for Menu {
         }
         match input {
             Input::Up | Input::Down | Input::Left | Input::Right => {
-                self.selection = 1 - self.selection;
+                let count = self
+                    .game
+                    .as_ref()
+                    .expect("menu holds the selected game")
+                    .players();
+                self.selection = (self.selection + 1) % count;
                 SceneAction::Continue
             }
             Input::Confirm | Input::GameA | Input::GameB => {
@@ -107,7 +122,12 @@ impl Scene for Menu {
         let tx = (w - font::text_width(title, TITLE_SCALE)) / 2;
         fb.draw_text(tx, TITLE_Y, TITLE_SCALE, TEXT_COLOR, title);
 
-        for (i, option) in OPTIONS.iter().enumerate() {
+        let players = self
+            .game
+            .as_ref()
+            .expect("menu holds the selected game")
+            .players();
+        for (i, option) in OPTIONS.iter().take(players).enumerate() {
             let selected = i == self.selection;
             let y = OPTION_Y + i as i32 * OPTION_LINE;
             // Center the option text; the cursor column sits just to its left.

@@ -1,8 +1,8 @@
-//! The gibbon game: a copy of the snake game in its own package, so it can
-//! diverge independently. Same module structure as `snake`.
+//! The gibbon game: a Lode Runner-style grid game in its own package, so it
+//! can diverge independently from the snake game.
 
 pub mod assets;
 pub mod game;
+pub mod level;
 pub mod palette;
 pub mod play;
-pub mod snake;

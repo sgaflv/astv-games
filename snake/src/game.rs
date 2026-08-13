@@ -143,6 +143,7 @@ impl Game {
 
     /// Turn a cell shed by a bite into food. If the cell is covered by a snake
     /// or already holds food, the new food is respawned on a free cell instead.
+    /// Every shed cell yields exactly one food.
     fn shed_food(&mut self, pos: Cell) {
         let occupied = self
             .snakes
@@ -151,9 +152,7 @@ impl Game {
             || self.food.contains(&pos);
 
         if occupied {
-            if self.food.is_empty() {
-                self.respawn_food();
-            }
+            self.respawn_food();
         } else {
             self.food.push(pos);
         }

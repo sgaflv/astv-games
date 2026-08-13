@@ -6,3 +6,6 @@ edition = "2024"
 [dependencies]
 engine = { path = "../engine" }
 rand = "0.10.2"
+
+[dev-dependencies]
+png = "0.18.1"
