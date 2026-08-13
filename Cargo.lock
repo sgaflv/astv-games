@@ -9,6 +9,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
 
 [[package]]
+name = "app"
+version = "0.1.0"
+dependencies = [
+ "engine",
+ "gibbon",
+ "miniquad",
+ "snake",
+]
+
+[[package]]
 name = "bitflags"
 version = "2.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -93,6 +103,14 @@ dependencies = [
  "libc",
  "r-efi",
  "rand_core",
+]
+
+[[package]]
+name = "gibbon"
+version = "0.1.0"
+dependencies = [
+ "engine",
+ "rand",
 ]
 
 [[package]]
@@ -194,7 +212,6 @@ name = "snake"
 version = "0.1.0"
 dependencies = [
  "engine",
- "miniquad",
  "rand",
 ]
 

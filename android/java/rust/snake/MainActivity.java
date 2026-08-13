@@ -294,7 +294,7 @@ public class MainActivity extends Activity {
     private QuadSurface view;
 
     static {
-        System.loadLibrary("snake");
+        System.loadLibrary("app");
     }
 
     @Override

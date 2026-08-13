@@ -25,12 +25,13 @@ physical display (1920×1080 ×4, 3840×2160 ×8, or letterboxed)
 
 ## Crate layout
 
-The project is a Cargo workspace with two packages: a reusable `engine` and the
-game itself (`snake`).
+The project is a Cargo workspace with four packages: a reusable `engine`, the
+two games (`snake`, `gibbon`), and the `app` package that selects and launches
+them.
 
 | Path                          | Responsibility                                              |
 | ----------------------------- | ----------------------------------------------------------- |
-| `Cargo.toml`                  | Workspace root: members `engine` + `snake`, shared profiles |
+| `Cargo.toml`                  | Workspace root: members `engine` + `snake` + `gibbon` + `app`, shared profiles |
 | `engine/Cargo.toml`           | `engine` package manifest (miniquad, font8x8, png)          |
 | `engine/build.rs`             | Embeds every file under `engine/assets/` into the binary    |
 | `engine/src/lib.rs`           | Engine module wiring (`app`, `assets`, `color`, `font`, `input`, `present`, `render`, `scene`, `sprites`) |
@@ -40,22 +41,35 @@ game itself (`snake`).
 | `engine/src/font.rs`          | 8x8 bitmap font blitting (font8x8), `text_width`            |
 | `engine/src/present.rs`       | `Presenter`: index + palette texture upload, palette-lookup shader, integer-scaled fullscreen quad |
 | `engine/src/app.rs`           | `Stage`: miniquad `EventHandler`, input, HUD               |
-| `engine/src/scene.rs`         | `Scene` trait + `SceneAction` (scenes decouple the game from the shell) |
+| `engine/src/scene.rs`         | `Scene` trait + `SceneAction` (scenes decouple the games from the shell) |
 | `engine/src/assets.rs`        | Asset registry: look up embedded assets by file name        |
 | `engine/assets/apple_rotate.png` | Bundled sprite sheet asset                               |
-| `snake/Cargo.toml`            | `snake` package manifest (engine + miniquad + rand)         |
-| `snake/src/lib.rs`            | Module wiring, `Conf`, `desktop_main()`, Android `quad_main` |
-| `snake/src/main.rs`           | Calls `snake::desktop_main()` (desktop only)                |
-| `snake/src/game.rs`           | `Game`: two snakes, shared food, tick clock, per-player input, drawing |
+| `snake/Cargo.toml`            | `snake` package manifest (engine + rand)                    |
+| `snake/src/lib.rs`            | Module wiring (`game`, `play`, `snake`)                     |
 | `snake/src/snake.rs`          | Reusable `Snake`: body, direction, input queue, growth, drawing |
-| `snake/src/menu.rs`           | `Menu` scene: player-count selection                        |
+| `snake/src/game.rs`           | `Game`: two snakes, shared food, tick clock, per-player input, drawing |
 | `snake/src/play.rs`           | `Playing` scene: `Game` + fixed-timestep accumulator + pause |
+| `gibbon/Cargo.toml`           | `gibbon` package manifest (engine + rand)                   |
+| `gibbon/src/lib.rs`           | Module wiring (`game`, `play`, `snake`)                     |
+| `gibbon/src/snake.rs`         | Copy of `snake::snake` (the games can diverge)              |
+| `gibbon/src/game.rs`          | Copy of `snake::game` (identical behavior for now)          |
+| `gibbon/src/play.rs`          | Copy of `snake::play` (`Playing` scene)                     |
+| `app/Cargo.toml`              | `app` package manifest (engine + miniquad + snake + gibbon) |
+| `app/src/lib.rs`              | Module wiring, `Conf`, `desktop_main()`, Android `quad_main` |
+| `app/src/main.rs`             | Calls `app::desktop_main()` (desktop only)                  |
+| `app/src/game_select.rs`      | `GameSelect` screen + `GameKind`: choose the game before the player count |
+| `app/src/menu.rs`             | `Menu` scene: player-count selection, starts the chosen game |
 | `android/java/.../MainActivity.java` | Android activity glue (SurfaceView + lifecycle + gamepad device->player routing) |
 | `android/java/quad_native/QuadNative.java` | JNI declarations matched by miniquad 0.4 + `surfaceOnPlayerKey` |
 | `android/AndroidManifest.xml` | Manifest (regular Activity, TV leanback launcher)           |
 | `scripts/build-apk.sh`        | cargo-ndk + javac/d8 + aapt2/zipalign/apksigner             |
 
 ## Snake (`snake/src/snake.rs`)
+
+The `snake` package is a self-contained library for the snake game. The
+`gibbon` package is a byte-for-byte copy of the same modules (`gibbon/src/...`)
+so the two games can diverge independently; the app package selects between
+them.
 
 * `Snake` is a pure, reusable unit: a body (`Vec<Segment>`), direction, the
   input ring buffer (`MAX_QUEUED_INPUTS = 3`), face state and a body color.
@@ -137,10 +151,14 @@ game itself (`snake`).
 
 ## App loop (`engine/src/app.rs`)
 
-* `Stage` implements `miniquad::EventHandler` (`update`/`draw`).
-* Two states: `Menu` (1 or 2 player selection) and `Playing`. The menu is
-  navigated with the direction keys (selection cycles), confirmed with Enter/
-  OK, and starts a `Game` with the chosen player count; Back quits.
+* `Stage` implements `miniquad::EventHandler` (`update`/`draw`) and keeps a
+  scene stack. Scene flow (in the `app` package): `GameSelect` (choose `SNAKE`
+  or `GIBBON`) -> `Menu` (1 or 2 player selection for the chosen game) -> the
+  chosen game's `Playing` scene (`snake::play::Playing` or
+  `gibbon::play::Playing`). The selection screens are navigated with the
+  direction keys (selection cycles) and confirmed with Enter/OK; Back pops one
+  level (`Menu` returns to `GameSelect`), and Back inside a game returns to
+  the root `GameSelect` (`PopToRoot`). Back on `GameSelect` quits the app.
 * `Input` (`Input` enum) maps Android TV/desktop keys to game actions.
   Player 1: DPAD/WASD + F1-F4; player 2: IJKL + F5-F8 (desktop) or the second
   gamepad (Android). Enter + Back/Escape + Menu/Space for global actions.
@@ -172,19 +190,20 @@ game itself (`snake`).
 * miniquad 0.4 uses its own Activity-based Java glue (not `NativeActivity`):
   `MainActivity` creates a `SurfaceView`, forwards lifecycle/input via
   `quad_native.QuadNative` JNI calls, and the Rust entry point is the exported
-  `quad_main` symbol (`lib.rs`).
+  `quad_main` symbol (`app/src/lib.rs`). The Java glue loads the native
+  library as `"app"` (`libapp.so`), built from the `app` crate.
 * `AndroidManifest.xml` declares `rust.snake.MainActivity`, targets API 30
   (min 26), and registers both `LAUNCHER` and `LEANBACK_LAUNCHER` intents.
-* `scripts/build-apk.sh` cross-compiles `libsnake.so` with cargo-ndk, compiles
+* `scripts/build-apk.sh` cross-compiles `libapp.so` with cargo-ndk, compiles
   the Java glue with `javac` (against the newest platform `android.jar`),
   dexes it with `d8`, then packages/signs the APK without cargo-apk.
 
 ## Verification
 
-* `cargo test` (defaults to `-p snake`; engine tests via `cargo test -p engine`).
-* `cargo clippy --all-targets -- -D warnings`
+* `cargo test --workspace` (all packages: app, engine, gibbon, snake).
+* `cargo clippy --workspace --all-targets -- -D warnings`
 * `cargo fmt --check`
-* `cargo check -p snake --target armv7-linux-androideabi` /
-  `cargo check -p snake --target aarch64-linux-android` (no Android SDK required).
+* `cargo check -p app --target armv7-linux-androideabi` /
+  `cargo check -p app --target aarch64-linux-android` (no Android SDK required).
 * APK build requires the Android SDK/NDK, cargo-ndk and a JDK:
   `just apk` (defaults to `armeabi-v7a`).

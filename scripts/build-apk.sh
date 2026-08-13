@@ -65,12 +65,12 @@ fi
 echo ">> cargo ndk ($ANDROID_ABI, platform $PLATFORM, profile $PROFILE)"
 NDK_ARGS=(-t "$ANDROID_ABI" --platform "$PLATFORM")
 if [ "$PROFILE" = "release" ]; then
-    cargo ndk "${NDK_ARGS[@]}" build -p snake --release
+    cargo ndk "${NDK_ARGS[@]}" build -p app --release
 else
-    cargo ndk "${NDK_ARGS[@]}" build -p snake
+    cargo ndk "${NDK_ARGS[@]}" build -p app
 fi
 
-SO="$ROOT/target/$RUST_TARGET/$PROFILE/libsnake.so"
+SO="$ROOT/target/$RUST_TARGET/$PROFILE/libapp.so"
 if [ ! -f "$SO" ]; then
     echo "error: native library not found: $SO" >&2
     exit 1
@@ -128,7 +128,7 @@ if [ ! -f "$KEYSTORE" ]; then
         -dname "CN=Android Debug,O=Android,C=US" >/dev/null 2>&1
 fi
 
-OUT_APK="$OUT_DIR/snake.apk"
+OUT_APK="$OUT_DIR/app.apk"
 echo ">> apksigner sign"
 "$APKSIGNER" sign \
     --ks "$KEYSTORE" \

@@ -15,7 +15,7 @@ check:
     cargo check
 
 test:
-    cargo test
+    cargo test --workspace
 
 fmt:
     cargo fmt
@@ -36,7 +36,7 @@ targets:
 
 # cargo check for both Android targets (no SDK required)
 check-android:
-    cargo check -p snake --target armv7-linux-androideabi
+    cargo check -p app --target armv7-linux-androideabi
 
 # Build signed debug apk (cargo ndk + javac/d8 + aapt2/zipalign/apksigner)
 apk:
@@ -52,7 +52,7 @@ apk-arm64:
 
 # Build only native library
 ndk:
-    cargo ndk -t arm64-v8a build -p snake --release
+    cargo ndk -t arm64-v8a build -p app --release
 
 # --------------------
 # Install
@@ -62,7 +62,7 @@ connect:
     adb connect 192.168.188.54
 
 install:
-    adb install -r -d target/apk/snake.apk
+    adb install -r -d target/apk/app.apk
 
 tv-run:
     adb shell monkey -p rust.snake 1

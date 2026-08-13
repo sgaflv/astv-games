@@ -5,10 +5,14 @@
 //! calls to it; it never knows what a scene draws or what its input means.
 //!
 //! A game builds its scenes and swaps them by returning
-//! [`SceneAction::Switch`] from `input` or `update` — e.g. the menu returns a
-//! `Playing` scene on confirm, and gameplay will later return a game-over
-//! scene. Because the engine only sees the trait, the same engine shell can be
-//! reused for an entirely different game.
+//! [`SceneAction`] from `input` or `update` — e.g. the game selection returns
+//! a player menu on confirm, and the menu returns a `Playing` scene on its own
+//! confirm. The engine keeps a stack of scenes: [`SceneAction::Push`] drops a
+//! new scene on top of the current one (which stays below), and
+//! [`SceneAction::Pop`]/[`SceneAction::PopToRoot`] return to a previous scene,
+//! so a gameplay scene can hand control back to the game-selection screen.
+//! Because the engine only sees the trait, the same engine shell can be reused
+//! for an entirely different game.
 
 use crate::input::{Input, InputState};
 use crate::render::Framebuffer;
@@ -17,8 +21,19 @@ use crate::render::Framebuffer;
 pub enum SceneAction {
     /// Stay in the current scene.
     Continue,
-    /// Replace the current scene with a new one.
+    /// Push a new scene on top of the current one. The current scene is kept
+    /// below on the stack, so [`SceneAction::Pop`] / [`SceneAction::PopToRoot`]
+    /// can return to it.
+    Push(Box<dyn Scene>),
+    /// Replace the current scene with a new one (the current scene is dropped).
     Switch(Box<dyn Scene>),
+    /// Return to the previous scene (pop one level). Quits the app if the
+    /// stack is empty.
+    Pop,
+    /// Return to the root scene (the first one ever pushed, i.e. the app's
+    /// home screen), dropping everything above it. Quits the app if the stack
+    /// is empty.
+    PopToRoot,
     /// Request the application to quit.
     Quit,
 }

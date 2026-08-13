@@ -22,7 +22,7 @@ public class QuadNative {
     public native static void surfaceOnKeyUp(int keycode);
     public native static void surfaceOnCharacter(int character);
     // Device-aware gamepad input: player slot (0/1) + raw keycode + down flag.
-    // Implemented in the snake crate (input.rs) because miniquad 0.4 cannot
+    // Implemented in the engine crate (input.rs) because miniquad 0.4 cannot
     // distinguish gamepads.
     public native static void surfaceOnPlayerKey(int player, int keycode, int down);
 }

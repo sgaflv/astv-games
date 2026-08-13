@@ -1,8 +1,8 @@
 //! Engine shell: the miniquad `EventHandler` that owns the framebuffer, the
 //! presenter, input routing, timing diagnostics and the currently active
 //! [`Scene`]. Nothing here is game-specific; a game supplies its own scenes
-//! (the `snake` package's `menu`/`play` are an example) and the engine drives
-//! them.
+//! (the `app` package's `game_select`/`menu`/`play` are an example) and the
+//! engine drives them.
 
 use crate::color::Color;
 use crate::input::{Input, InputState};
@@ -13,6 +13,7 @@ use crate::scene::{Scene, SceneAction};
 use miniquad::{EventHandler, KeyCode, KeyMods};
 
 use std::fmt::Write as _;
+use std::mem;
 
 /// Upper bound for a single frame delta, so a pause, debugger break or
 /// scheduling hiccup never causes an enormous catch-up.
@@ -30,6 +31,10 @@ const HUD_POS: (i32, i32) = (6, 6);
 pub struct Stage {
     /// The active scene (menu, gameplay, score, game over, ...).
     scene: Box<dyn Scene>,
+    /// Scenes below the active one, awaiting a return via
+    /// `SceneAction::Pop`/`PopToRoot`. The root scene (e.g. game selection)
+    /// sits at the bottom.
+    stack: Vec<Box<dyn Scene>>,
     framebuffer: Framebuffer,
     presenter: Presenter,
 
@@ -61,6 +66,7 @@ impl Stage {
         let now = miniquad::date::now();
         Stage {
             scene: initial_scene,
+            stack: Vec::new(),
             framebuffer: Framebuffer::new(),
             presenter: Presenter::new(),
             frame_start: now,
@@ -83,7 +89,27 @@ impl Stage {
     fn run_action(&mut self, action: SceneAction) {
         match action {
             SceneAction::Continue => {}
+            SceneAction::Push(scene) => {
+                self.stack.push(mem::replace(&mut self.scene, scene));
+            }
             SceneAction::Switch(scene) => self.scene = scene,
+            SceneAction::Pop => {
+                if let Some(scene) = self.stack.pop() {
+                    self.scene = scene;
+                } else {
+                    miniquad::window::request_quit();
+                }
+            }
+            SceneAction::PopToRoot => {
+                if self.stack.is_empty() {
+                    miniquad::window::request_quit();
+                } else {
+                    // Drop everything above the root scene, then make the root
+                    // active again.
+                    self.stack.drain(1..);
+                    self.scene = self.stack.pop().expect("stack checked non-empty");
+                }
+            }
             SceneAction::Quit => miniquad::window::request_quit(),
         }
     }

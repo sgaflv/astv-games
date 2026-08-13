@@ -1,14 +1,16 @@
-//! Player-count selection screen: choose 1 or 2 players, then start the game.
+//! Player-count selection screen: choose 1 or 2 players for the game selected
+//! on the game-selection screen, then start it.
 
-use crate::play::Playing;
+use crate::game_select::GameKind;
 use engine::color::Color;
 use engine::font;
 use engine::input::{Input, InputState};
 use engine::render::{Framebuffer, Renderer};
 use engine::scene::{Scene, SceneAction};
+use gibbon::play::Playing as GibbonPlaying;
+use snake::play::Playing as SnakePlaying;
 
 // Menu visuals.
-const TITLE: &str = "SNAKE";
 const TITLE_SCALE: i32 = 3;
 const TITLE_Y: i32 = 54;
 const OPTIONS: [&str; 2] = ["1 PLAYER", "2 PLAYERS"];
@@ -18,21 +20,18 @@ const OPTION_LINE: i32 = 36;
 const TEXT_COLOR: Color = Color::rgb(204, 204, 214);
 const DIM_COLOR: Color = Color::rgb(120, 120, 130);
 
-/// The player-count selection screen. Direction keys cycle the selection,
-/// Confirm (Enter/OK) starts a game with the chosen player count, Back quits.
+/// The player-count selection screen for a chosen game. Direction keys cycle
+/// the selection, Confirm (Enter/OK) starts the selected game with the chosen
+/// player count, Back quits.
 pub struct Menu {
     selection: usize,
+    kind: GameKind,
 }
 
 impl Menu {
-    pub fn new() -> Menu {
-        Menu { selection: 0 }
-    }
-}
-
-impl Default for Menu {
-    fn default() -> Menu {
-        Menu::new()
+    /// Player-count selection for the given game.
+    pub fn new(kind: GameKind) -> Menu {
+        Menu { selection: 0, kind }
     }
 }
 
@@ -47,9 +46,13 @@ impl Scene for Menu {
                 SceneAction::Continue
             }
             Input::Confirm | Input::GameA | Input::GameB => {
-                SceneAction::Switch(Box::new(Playing::new(self.selection + 1)))
+                let players = self.selection + 1;
+                match self.kind {
+                    GameKind::Snake => SceneAction::Push(Box::new(SnakePlaying::new(players))),
+                    GameKind::Gibbon => SceneAction::Push(Box::new(GibbonPlaying::new(players))),
+                }
             }
-            Input::Back => SceneAction::Quit,
+            Input::Back => SceneAction::Pop,
             Input::Pause | Input::GameX | Input::GameY => SceneAction::Continue,
         }
     }
@@ -61,8 +64,9 @@ impl Scene for Menu {
     fn draw(&mut self, fb: &mut Framebuffer) {
         let w = fb.width() as i32;
 
-        let tx = (w - font::text_width(TITLE, TITLE_SCALE)) / 2;
-        fb.draw_text(tx, TITLE_Y, TITLE_SCALE, TEXT_COLOR, TITLE);
+        let title = self.kind.label();
+        let tx = (w - font::text_width(title, TITLE_SCALE)) / 2;
+        fb.draw_text(tx, TITLE_Y, TITLE_SCALE, TEXT_COLOR, title);
 
         for (i, option) in OPTIONS.iter().enumerate() {
             let selected = i == self.selection;
