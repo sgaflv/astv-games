@@ -3,27 +3,16 @@ use crate::engine::present::Presenter;
 use crate::engine::render::{Color, Framebuffer, Renderer};
 use crate::engine::sprites::{RleSprite, SpriteSheet};
 use crate::engine::start::{Start, State};
-use crate::game::{self, Direction, PLAYERS};
+use crate::game::{Direction, PLAYERS, TARGET_FRAMES};
 
 use miniquad::{EventHandler, KeyCode, KeyMods};
 
 use std::fmt::Write as _;
 use std::time::Duration;
 
-/// Fixed simulation timestep.
-const SIM_STEP_SECONDS: f64 = 1.0 / game::SIM_STEP_HZ as f64;
-
-/// Cap on a single frame delta. Prevents a large hiccup (debugger, OS sleep)
-/// from running dozens of catch-up simulation steps.
-const MAX_FRAME_TIME: f64 = 0.2;
-
-/// Target presentation rate in frames per second. This is the FPS cap:
-/// change this value to cap the game at a different frame rate.
-/// The simulation always advances at SIM_STEP_HZ (fixed timestep).
-const TARGET_FPS: u32 = 60;
-
-/// Target presentation rate derived from TARGET_FPS.
-const FRAME_TIME: f64 = 1.0 / TARGET_FPS as f64;
+const FRAME_TIME: f64 = 1.0 / TARGET_FRAMES as f64;
+const MAX_FRAME_TIME: f64 = 0.25;
+const MAX_SIM_STEPS: usize = 8;
 
 /// How often the HUD text is refreshed (avoid per-frame text blits).
 const HUD_REFRESH_EVERY: u32 = 30;
@@ -299,10 +288,11 @@ impl Stage {
         match self.start.state {
             State::Menu => self.draw_menu(),
             State::Playing => {
-                let alpha = self.start.game.alpha();
-                self.start
-                    .game
-                    .draw(&mut self.framebuffer, alpha, &self.apple);
+                self.start.game.draw(
+                    &mut self.framebuffer,
+                    self.start.game.frame_cnt,
+                    &self.apple,
+                );
 
                 if self.hud_dirty {
                     self.refresh_hud();
@@ -364,49 +354,52 @@ impl Default for Stage {
 
 impl EventHandler for Stage {
     fn update(&mut self) {
-        // Pace at TARGET_FPS: sleep until the start of the next frame slot.
-        // On a v-synced 60 Hz display the swap in draw() already takes the
-        // full frame budget and this sleep becomes a no-op.
         let now = miniquad::date::now();
-        let slot_start = self.frame_start + FRAME_TIME;
-        if now < slot_start {
-            std::thread::sleep(Duration::from_secs_f64(slot_start - now));
-        }
-        let now = miniquad::date::now();
-        let dt = (now - self.frame_start).min(MAX_FRAME_TIME);
+
+        let mut dt = now - self.frame_start;
         self.frame_start = now;
+
+        // Don't let a pause, debugger break, scheduling hiccup, etc.
+        // cause an enormous simulation catch-up.
+        dt = dt.min(MAX_FRAME_TIME);
 
         if self.start.pause_requested {
             self.start.pause_requested = false;
             self.start.paused = !self.start.paused;
         }
 
-        // Device-aware gamepad input (Android); the Java glue assigned each
-        // gamepad a player slot. No-op on desktop.
         #[cfg(target_os = "android")]
         self.drain_player_input();
 
-        // Fixed-timestep simulation.
         if !self.start.paused && self.start.state == State::Playing {
-            // Placeholder gamepad face-button actions (while held). A hides
-            // the tongue, B closes the eyes; X/Y are reserved for later use.
+            // Input state is sampled for the simulation.
             for (p, snake) in self.start.game.snakes.iter_mut().enumerate() {
                 snake.tongue_hidden = self.held[p][input_index(Input::GameA)];
+
                 snake.eyes_closed = self.held[p][input_index(Input::GameB)];
             }
 
             self.start.sim_accumulator += dt;
+
             let mut steps = 0;
-            while self.start.sim_accumulator >= SIM_STEP_SECONDS && steps < 16 {
+
+            while self.start.sim_accumulator >= FRAME_TIME && steps < MAX_SIM_STEPS {
                 self.start.game.step();
-                self.start.sim_accumulator -= SIM_STEP_SECONDS;
+                self.start.sim_accumulator -= FRAME_TIME;
                 steps += 1;
+            }
+
+            // Optional: avoid carrying a huge backlog forever.
+            if steps == MAX_SIM_STEPS {
+                self.start.sim_accumulator = 0.0;
             }
         }
 
         // HUD refresh + FPS smoothing.
         self.frame_count += 1;
+
         self.fps_accum += dt;
+
         if self.frame_count.is_multiple_of(HUD_REFRESH_EVERY) {
             self.fps_value = (30.0 / self.fps_accum.max(1e-9)).round() as u32;
             self.fps_accum = 0.0;

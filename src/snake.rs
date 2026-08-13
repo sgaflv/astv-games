@@ -1,4 +1,7 @@
-use crate::engine::render::{Color, Renderer};
+use crate::{
+    engine::render::{Color, Renderer},
+    game::SIM_FRAMES,
+};
 
 /// The board is GRID_SIZE_X x GRID_SIZE_Y cells.
 pub const GRID_SIZE_X: i32 = 20;
@@ -260,16 +263,16 @@ impl Snake {
 
     /// Draw the snake body and head details into a logical-coordinate renderer.
     /// `alpha` is the fixed-point tick interpolation from the game.
-    pub fn draw(&self, r: &mut impl Renderer, alpha: u32) {
+    pub fn draw(&self, r: &mut impl Renderer, frame_cnt: usize) {
         for (i, segment) in self.body.iter().enumerate() {
-            let (x, y) = segment_screen(*segment, alpha);
+            let (x, y) = segment_screen(*segment, frame_cnt);
             r.fill_rect(x, y, CELL, CELL, self.color);
             if i == 0 {
                 draw_head_details(
                     r,
                     *segment,
                     self.direction,
-                    alpha,
+                    frame_cnt,
                     self.tongue_hidden,
                     self.eyes_closed,
                 );
@@ -284,13 +287,13 @@ const EYE_COLOR: Color = Color::rgb(13, 13, 13);
 const TONGUE_COLOR: Color = Color::rgb(230, 77, 77);
 
 /// Interpolated screen top-left of a segment during a tick.
-fn segment_screen(segment: Segment, alpha: u32) -> (i32, i32) {
+fn segment_screen(segment: Segment, frame_cnt: usize) -> (i32, i32) {
     let (px, py) = cell_screen(segment.previous);
     let (cx, cy) = cell_screen(segment.current);
     if !segment.interpolates() {
         return (cx, cy);
     }
-    (interp(px, cx, alpha), interp(py, cy, alpha))
+    (interp(px, cx, frame_cnt), interp(py, cy, frame_cnt))
 }
 
 /// Screen pixel position of a cell's top-left corner (top-left origin).
@@ -298,10 +301,10 @@ fn cell_screen(cell: Cell) -> (i32, i32) {
     (BOARD_X + cell.x * CELL, BOARD_Y + cell.y * CELL)
 }
 
-/// Integer linear interpolation with rounding. `alpha` is fixed point 0..=65536.
-fn interp(a: i32, b: i32, alpha: u32) -> i32 {
+/// Integer linear interpolation with rounding.
+fn interp(a: i32, b: i32, frame_cnt: usize) -> i32 {
     let d = (b - a) as i64;
-    (a as i64 + ((d * alpha as i64 + 32768) >> 16)) as i32
+    (a as i64 + (d * frame_cnt as i64 / SIM_FRAMES as i64)) as i32
 }
 
 /// Eyes and forked tongue on the interpolated head, pointing along the move
@@ -310,7 +313,7 @@ fn draw_head_details(
     r: &mut impl Renderer,
     segment: Segment,
     direction: Direction,
-    alpha: u32,
+    alpha: usize,
     tongue_hidden: bool,
     eyes_closed: bool,
 ) {

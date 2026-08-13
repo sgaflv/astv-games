@@ -604,11 +604,6 @@ mod tests {
         assert_eq!(rgb_at(&fb, 3, 7), [0, 0, 0]);
     }
 
-    /// Helper: a 2x1 image of `indices` (one byte per pixel).
-    fn indexed(a: u8, b: u8) -> [u8; 2] {
-        [a, b]
-    }
-
     #[test]
     fn quantize_rgba_thresholds_alpha() {
         let palette = Palette::default();

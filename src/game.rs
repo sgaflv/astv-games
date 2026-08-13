@@ -13,18 +13,15 @@ use rand::rngs::ThreadRng;
 
 /// Fixed simulation timestep (Hz). The game simulation advances in fixed 1/60 s
 /// steps, independently of the display refresh rate.
-pub const SIM_STEP_HZ: u32 = 60;
+pub const TARGET_FRAMES: usize = 60;
 
-/// Seconds between snake move ticks.
-pub const MOVE_INTERVAL: f64 = 0.5;
-
-/// Number of fixed simulation steps per move tick (0.5 s * 60 Hz).
-pub const TICK_STEPS: u32 = (MOVE_INTERVAL * SIM_STEP_HZ as f64) as u32;
+/// Game update happens every SIM_FRAMES, so a few times per second but not on each frame
+pub const SIM_FRAMES: usize = 24;
 
 /// Number of players (one snake each).
 pub const PLAYERS: usize = 2;
 
-// Palette (matches the original Bevy rendering as closely as practical).
+// Palette
 const BG_COLOR: Color = Color::rgb(13, 13, 18);
 const GRID_COLOR: Color = Color::rgb(38, 38, 46);
 
@@ -45,9 +42,9 @@ pub struct Game {
     /// into extra food, so there can be several at once.
     food: Vec<Cell>,
     rng: ThreadRng,
-    steps_in_tick: u32,
-    /// Number of completed snake move ticks; drives sprite animation.
-    moves: u64,
+
+    /// Takes the value of a frame count within a second: 0..63
+    pub frame_cnt: usize,
 }
 
 impl Default for Game {
@@ -72,8 +69,7 @@ impl Game {
             snakes,
             food: Vec::new(),
             rng,
-            steps_in_tick: 0,
-            moves: 0,
+            frame_cnt: 0,
         };
         game.respawn_food();
         game
@@ -84,22 +80,21 @@ impl Game {
         &self.food
     }
 
-    /// Advance one fixed simulation step. The snakes move one cell every
-    /// TICK_STEPS steps, in lockstep, sharing the food pool. Eaten food cells
-    /// are removed; a replacement only spawns when no food is left on the
-    /// board. Bites (a head landing on another snake's body) are resolved
-    /// after the move: the shed cells immediately turn into extra food.
+    /// Advance one fixed simulation step.
     pub fn step(&mut self) {
-        self.steps_in_tick += 1;
-        if self.steps_in_tick >= TICK_STEPS {
-            self.steps_in_tick = 0;
-            self.moves += 1;
+        self.frame_cnt += 1;
+
+        if self.frame_cnt >= SIM_FRAMES {
+            self.frame_cnt = 0;
+
             for s in &mut self.snakes {
                 s.move_tick(&self.food);
             }
+
             // Remove any food cell a snake head reached.
             let heads: Vec<Cell> = self.snakes.iter().map(|s| s.head()).collect();
             self.food.retain(|f| !heads.contains(f));
+
             // Resolve bites before topping the pool back up: shed cells turn
             // into food immediately, so a bite must not be followed by an
             // extra respawn. A replacement only appears when no food is left.
@@ -171,14 +166,6 @@ impl Game {
         }
     }
 
-    /// Interpolation alpha for the current tick, fixed point in 0..=65536.
-    /// `(steps + 1) / TICK_STEPS` keeps motion continuous across tick
-    /// boundaries (a freshly moved segment starts just past its previous cell).
-    pub fn alpha(&self) -> u32 {
-        let n = (self.steps_in_tick + 1).min(TICK_STEPS);
-        (n * 65536 + TICK_STEPS / 2) / TICK_STEPS
-    }
-
     /// Queue a direction change for a player's snake (buffered until the next
     /// move tick).
     pub fn queue_direction(&mut self, player: usize, dir: Direction) {
@@ -196,10 +183,10 @@ impl Game {
 
     /// Draw the board, both snakes and the shared food. `apple` is the RLE
     /// sprite sheet used for food; its frames cycle with every move tick.
-    pub fn draw(&self, r: &mut impl Renderer, alpha: u32, apple: &[RleSprite]) {
+    pub fn draw(&self, r: &mut impl Renderer, frame: usize, apple: &[RleSprite]) {
         draw_grid(r);
         for s in &self.snakes {
-            s.draw(r, alpha);
+            s.draw(r, frame);
         }
         self.draw_food(r, apple);
     }
@@ -208,7 +195,8 @@ impl Game {
         if apple.is_empty() {
             return;
         }
-        let frame = (self.moves as usize) % apple.len();
+
+        let frame = (self.frame_cnt) * 12 / 60;
         for food in &self.food {
             let (cx, cy) = Self::cell_screen(*food);
             apple[frame].draw(r, cx, cy);
@@ -313,7 +301,7 @@ mod tests {
         ];
         game.snakes[1].direction = Direction::Left;
 
-        for _ in 0..TICK_STEPS {
+        for _ in 0..TARGET_FRAMES {
             game.step();
         }
 
@@ -347,7 +335,7 @@ mod tests {
     #[test]
     fn both_snakes_move_in_lockstep() {
         let mut game = Game::new(2);
-        for _ in 0..TICK_STEPS {
+        for _ in 0..TARGET_FRAMES {
             game.step();
         }
         assert_eq!(head(&game, 0), Cell { x: 4, y: 0 });
@@ -359,7 +347,7 @@ mod tests {
         let mut game = Game::new(2);
         // Steer snake 0 toward the nearest food; snake 1 wanders.
         let mut reached = false;
-        for _ in 0..TICK_STEPS * 300 {
+        for _ in 0..TARGET_FRAMES * 300 {
             let h = head(&game, 0);
             let (fx, fy) = game
                 .foods()
@@ -405,7 +393,7 @@ mod tests {
         let mut game = Game::new(2);
         game.queue_direction(0, Direction::Down);
         game.queue_direction(1, Direction::Up);
-        for _ in 0..TICK_STEPS {
+        for _ in 0..TARGET_FRAMES {
             game.step();
         }
         assert_eq!(head(&game, 0), Cell { x: 3, y: 1 });
@@ -449,7 +437,7 @@ mod tests {
         ];
         game.snakes[1].direction = Direction::Right;
 
-        for _ in 0..TICK_STEPS {
+        for _ in 0..TARGET_FRAMES {
             game.step();
         }
 
@@ -498,7 +486,7 @@ mod tests {
             .collect();
         game.snakes[1].direction = Direction::Right;
 
-        for _ in 0..TICK_STEPS {
+        for _ in 0..TARGET_FRAMES {
             game.step();
         }
 
@@ -546,7 +534,7 @@ mod tests {
             .collect();
         game.snakes[1].direction = Direction::Right;
 
-        for _ in 0..TICK_STEPS {
+        for _ in 0..TARGET_FRAMES {
             game.step();
         }
 
@@ -587,7 +575,7 @@ mod tests {
         ];
         game.snakes[0].direction = Direction::Right;
 
-        for _ in 0..TICK_STEPS {
+        for _ in 0..TARGET_FRAMES {
             game.step();
         }
 
@@ -626,7 +614,7 @@ mod tests {
         ];
         game.snakes[1].direction = Direction::Left;
 
-        for _ in 0..TICK_STEPS {
+        for _ in 0..TARGET_FRAMES {
             game.step();
         }
 
@@ -665,7 +653,7 @@ mod tests {
             .collect();
         game.snakes[1].direction = Direction::Right;
 
-        for _ in 0..TICK_STEPS {
+        for _ in 0..TARGET_FRAMES {
             game.step();
         }
 
@@ -682,22 +670,5 @@ mod tests {
         assert_eq!(game.snakes[0].body.len(), 2);
         assert_eq!(game.snakes[1].body.len(), 5);
         assert_eq!(game.foods().len(), 1);
-    }
-
-    #[test]
-    fn alpha_is_strictly_increasing_and_wraps() {
-        let mut game = Game::new(2);
-        let mut prev = 0u32;
-        for _ in 0..TICK_STEPS {
-            let a = game.alpha();
-            assert!(a > prev, "alpha must increase during a tick");
-            assert!(a <= 65536);
-            prev = a;
-            game.step();
-        }
-        // After a tick the alpha wraps back down to just above 0.
-        let wrapped = game.alpha();
-        assert!(wrapped < prev);
-        assert!(wrapped > 0);
     }
 }
