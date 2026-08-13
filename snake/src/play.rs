@@ -1,12 +1,12 @@
 //! The playing mode: a `Game` advanced by a fixed-timestep accumulator, plus
 //! pause handling and the animated food sprites.
 
-use crate::engine::color::Color;
-use crate::engine::input::{Input, InputState};
-use crate::engine::render::{Framebuffer, Renderer};
-use crate::engine::scene::{Scene, SceneAction};
-use crate::engine::sprites::{RleSprite, SpriteSheet};
 use crate::game::{Direction, Game, TARGET_FRAMES};
+use engine::color::Color;
+use engine::input::{Input, InputState};
+use engine::render::{Framebuffer, Renderer};
+use engine::scene::{Scene, SceneAction};
+use engine::sprites::{RleSprite, SpriteSheet};
 
 /// Fixed simulation timestep: the game advances in fixed 1/60 s steps,
 /// independently of the display refresh rate.

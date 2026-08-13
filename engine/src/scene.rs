@@ -1,6 +1,6 @@
 //! The scene abstraction: a game-agnostic way to split an app into screens or
 //! modes (a player menu, the gameplay itself, a score screen, a game-over
-//! screen, ...). The engine [`crate::engine::app::Stage`] owns exactly one
+//! screen, ...). The engine [`crate::app::Stage`] owns exactly one
 //! active [`Scene`] at a time and forwards input, update, draw and lifecycle
 //! calls to it; it never knows what a scene draws or what its input means.
 //!
@@ -10,8 +10,8 @@
 //! scene. Because the engine only sees the trait, the same engine shell can be
 //! reused for an entirely different game.
 
-use crate::engine::input::{Input, InputState};
-use crate::engine::render::Framebuffer;
+use crate::input::{Input, InputState};
+use crate::render::Framebuffer;
 
 /// What a scene asks the engine to do next.
 pub enum SceneAction {

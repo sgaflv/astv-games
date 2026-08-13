@@ -65,9 +65,9 @@ fi
 echo ">> cargo ndk ($ANDROID_ABI, platform $PLATFORM, profile $PROFILE)"
 NDK_ARGS=(-t "$ANDROID_ABI" --platform "$PLATFORM")
 if [ "$PROFILE" = "release" ]; then
-    cargo ndk "${NDK_ARGS[@]}" build --release
+    cargo ndk "${NDK_ARGS[@]}" build -p snake --release
 else
-    cargo ndk "${NDK_ARGS[@]}" build
+    cargo ndk "${NDK_ARGS[@]}" build -p snake
 fi
 
 SO="$ROOT/target/$RUST_TARGET/$PROFILE/libsnake.so"

@@ -1,8 +1,8 @@
 use std::error::Error;
 use std::fmt;
 
-use crate::engine::color::{Color, Palette};
-use crate::engine::font;
+use crate::color::{Color, Palette};
+use crate::font;
 
 /// Logical rendering resolution. 480 x 270 is 16:9 and scales with an exact
 /// integer factor to 1920 x 1080 (x4) and 3840 x 2160 (x8).
@@ -348,7 +348,7 @@ pub fn integer_scale(output_width: i32, output_height: i32) -> i32 {
 
 #[cfg(test)]
 mod tests {
-    use crate::engine::color::{PALETTE_SIZE, TRANSPARENT};
+    use crate::color::{PALETTE_SIZE, TRANSPARENT};
 
     use super::*;
 

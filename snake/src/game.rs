@@ -1,13 +1,13 @@
 //! Game orchestration: two snakes on one board sharing a single food.
 
-use crate::engine::color::Color;
 pub use crate::snake::{
     BOARD_PX, BOARD_PY, BOARD_X, BOARD_Y, CELL, Cell, Direction, GRID_SIZE_X, GRID_SIZE_Y, HUD_H,
     MAX_QUEUED_INPUTS, Segment, Snake,
 };
+use engine::color::Color;
 
-use crate::engine::render::Renderer;
-use crate::engine::sprites::RleSprite;
+use engine::render::Renderer;
+use engine::sprites::RleSprite;
 
 use rand::RngExt;
 use rand::rngs::ThreadRng;

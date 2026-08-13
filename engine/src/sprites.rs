@@ -10,23 +10,23 @@
 //! bounding box of the opaque pixels rather than a fixed frame size.
 //!
 //! ```no_run
-//! use snake::engine::sprites::SpriteSheet;
+//! use engine::sprites::SpriteSheet;
 //!
 //! // 12 frames of 24x24 in assets/apple_rotate.png.
 //! let sheet = SpriteSheet::load("apple_rotate.png", 24, 24, 12)?;
 //! let apple = sheet.to_rle()?;
 //! // apple[0].draw(&mut framebuffer, x, y);  // transparent pixels are skipped
-//! # Ok::<(), snake::engine::sprites::SpriteError>(())
+//! # Ok::<(), engine::sprites::SpriteError>(())
 //! ```
 
 use std::error::Error;
 use std::fmt;
 use std::io::Cursor;
 
-use crate::engine::color::TRANSPARENT;
-pub use crate::engine::render::RleError;
-use crate::engine::render::{CT_NEXT, CT_OPAQUE, CT_SKIP, MAX_RUN, Renderer, RleDecoder};
-use crate::engine::{assets, color::Palette};
+use crate::color::TRANSPARENT;
+pub use crate::render::RleError;
+use crate::render::{CT_NEXT, CT_OPAQUE, CT_SKIP, MAX_RUN, Renderer, RleDecoder};
+use crate::{assets, color::Palette};
 
 /// Bytes per pixel in a decoded sprite.
 const CHANNELS: usize = 4;
@@ -426,7 +426,7 @@ fn decode_png(data: &[u8]) -> Result<RgbaImage, SpriteError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::engine::{
+    use crate::{
         color::{Color, TRANSPARENT},
         render::{CT_COUNT, Framebuffer},
     };

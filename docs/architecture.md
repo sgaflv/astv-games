@@ -25,26 +25,37 @@ physical display (1920×1080 ×4, 3840×2160 ×8, or letterboxed)
 
 ## Crate layout
 
+The project is a Cargo workspace with two packages: a reusable `engine` and the
+game itself (`snake`).
+
 | Path                          | Responsibility                                              |
 | ----------------------------- | ----------------------------------------------------------- |
-| `src/lib.rs`                  | Module wiring, `Conf`, `desktop_main()`, Android `quad_main` |
-| `src/main.rs`                 | Calls `snake::desktop_main()` (desktop only)                |
-| `build.rs`                    | Embeds every file under `assets/` into the binary           |
-| `src/assets.rs`               | Asset registry: look up embedded assets by file name        |
-| `src/sprites/mod.rs`          | `Sprite`/`SpriteSheet` decode + `RleSprite` (RLE) blit                  |
-| `src/game.rs`                 | `Game`: two snakes, shared food, tick clock, per-player input, drawing |
-| `src/snake.rs`                | Reusable `Snake`: body, direction, input queue, growth, drawing |
-| `src/input.rs`                | Device-aware Android gamepad queue + `surfaceOnPlayerKey` JNI export |
-| `src/render.rs`               | `Renderer` trait, `Color`, `Palette`, indexed `Framebuffer`, `integer_scale` |
-| `src/font.rs`                 | 8x8 bitmap font blitting (font8x8), `text_width`            |
-| `src/present.rs`              | `Presenter`: index + palette texture upload, palette-lookup shader, integer-scaled fullscreen quad |
-| `src/app.rs`                  | `Stage`: miniquad `EventHandler`, input, pacing, HUD        |
+| `Cargo.toml`                  | Workspace root: members `engine` + `snake`, shared profiles |
+| `engine/Cargo.toml`           | `engine` package manifest (miniquad, font8x8, png)          |
+| `engine/build.rs`             | Embeds every file under `engine/assets/` into the binary    |
+| `engine/src/lib.rs`           | Engine module wiring (`app`, `assets`, `color`, `font`, `input`, `present`, `render`, `scene`, `sprites`) |
+| `engine/src/sprites.rs`       | `Sprite`/`SpriteSheet` decode + `RleSprite` (RLE) blit      |
+| `engine/src/input.rs`         | Device-aware Android gamepad queue + `surfaceOnPlayerKey` JNI export |
+| `engine/src/render.rs`        | `Renderer` trait, `Color`, `Palette`, indexed `Framebuffer`, `integer_scale` |
+| `engine/src/font.rs`          | 8x8 bitmap font blitting (font8x8), `text_width`            |
+| `engine/src/present.rs`       | `Presenter`: index + palette texture upload, palette-lookup shader, integer-scaled fullscreen quad |
+| `engine/src/app.rs`           | `Stage`: miniquad `EventHandler`, input, HUD               |
+| `engine/src/scene.rs`         | `Scene` trait + `SceneAction` (scenes decouple the game from the shell) |
+| `engine/src/assets.rs`        | Asset registry: look up embedded assets by file name        |
+| `engine/assets/apple_rotate.png` | Bundled sprite sheet asset                               |
+| `snake/Cargo.toml`            | `snake` package manifest (engine + miniquad + rand)         |
+| `snake/src/lib.rs`            | Module wiring, `Conf`, `desktop_main()`, Android `quad_main` |
+| `snake/src/main.rs`           | Calls `snake::desktop_main()` (desktop only)                |
+| `snake/src/game.rs`           | `Game`: two snakes, shared food, tick clock, per-player input, drawing |
+| `snake/src/snake.rs`          | Reusable `Snake`: body, direction, input queue, growth, drawing |
+| `snake/src/menu.rs`           | `Menu` scene: player-count selection                        |
+| `snake/src/play.rs`           | `Playing` scene: `Game` + fixed-timestep accumulator + pause |
 | `android/java/.../MainActivity.java` | Android activity glue (SurfaceView + lifecycle + gamepad device->player routing) |
 | `android/java/quad_native/QuadNative.java` | JNI declarations matched by miniquad 0.4 + `surfaceOnPlayerKey` |
 | `android/AndroidManifest.xml` | Manifest (regular Activity, TV leanback launcher)           |
 | `scripts/build-apk.sh`        | cargo-ndk + javac/d8 + aapt2/zipalign/apksigner             |
 
-## Snake (`src/snake.rs`)
+## Snake (`snake/src/snake.rs`)
 
 * `Snake` is a pure, reusable unit: a body (`Vec<Segment>`), direction, the
   input ring buffer (`MAX_QUEUED_INPUTS = 3`), face state and a body color.
@@ -58,7 +69,7 @@ physical display (1920×1080 ×4, 3840×2160 ×8, or letterboxed)
   reversals are rejected).
 * `draw()` renders body + interpolated head (eyes/tongue) through `Renderer`.
 
-## Game (`src/game.rs`)
+## Game (`snake/src/game.rs`)
 
 * Fixed simulation step: 60 Hz (`SIM_STEP_HZ`), snakes move every 0.5 s
   (`TICK_STEPS = 30` steps per move), in lockstep, sharing one food.
@@ -76,7 +87,7 @@ physical display (1920×1080 ×4, 3840×2160 ×8, or letterboxed)
 * Every frame the framebuffer is fully repainted (clear + grid + snakes + food +
   HUD), so no incremental/dirty tracking is needed.
 
-## Rendering (`src/render.rs`, `src/font.rs`)
+## Rendering (`engine/src/render.rs`, `engine/src/font.rs`)
 
 * `Renderer` trait exposes only integer, top-left-origin calls, including
   `draw_rle_image` for sprite blits.
@@ -91,7 +102,7 @@ physical display (1920×1080 ×4, 3840×2160 ×8, or letterboxed)
 * Text uses the public-domain `font8x8::legacy::BASIC_LEGACY` bitmap font
   (8x8 glyphs, bit 7 = leftmost column, non-ASCII falls back to `?`).
 
-## Assets & sprites (`build.rs`, `src/assets.rs`, `src/sprites/mod.rs`)
+## Assets & sprites (`engine/build.rs`, `engine/src/assets.rs`, `engine/src/sprites.rs`)
 
 * `build.rs` scans `assets/` and emits a static `(name, bytes)` table that is
   `include!`-ed into `src/assets.rs`, so every asset is embedded in the binary
@@ -107,7 +118,7 @@ physical display (1920×1080 ×4, 3840×2160 ×8, or letterboxed)
 * The game's food uses the embedded `apple_rotate.png` sheet (12 frames of
   24x24, one board cell), animated one frame per snake move tick.
 
-## Presentation (`src/present.rs`)
+## Presentation (`engine/src/present.rs`)
 
 * Two textures: a 480x270 index texture (`FilterMode::Nearest`, no mipmaps)
   holding the framebuffer's 8-bit palette indices, and a 256x1 RGB8 palette
@@ -124,7 +135,7 @@ physical display (1920×1080 ×4, 3840×2160 ×8, or letterboxed)
   (letterbox bars blend with the background color).
 * The clear color (13,13,18) matches the game background.
 
-## App loop (`src/app.rs`)
+## App loop (`engine/src/app.rs`)
 
 * `Stage` implements `miniquad::EventHandler` (`update`/`draw`).
 * Two states: `Menu` (1 or 2 player selection) and `Playing`. The menu is
@@ -137,12 +148,12 @@ physical display (1920×1080 ×4, 3840×2160 ×8, or letterboxed)
   for edge detection and face buttons (A hides the tongue, B closes the eyes).
   Auto-repeat suppression is keyed on the physical key (`held_keys`), so
   holding one key never blocks a different key that maps to the same input.
-* Fixed timestep accumulator advances the sim at 60 Hz; rendering runs each
-  draw and is paced to ~60 FPS with a bounded max frame time.
+* A fixed-timestep accumulator advances the sim at 60 Hz regardless of the
+  display rate; rendering runs each `draw` with a bounded max frame time.
 * HUD shows FPS / window size / logical resolution / scale; refreshes every
   30 frames. Pause toggles on Pause action; window minimize pauses.
 
-## Android input (`src/input.rs`)
+## Android input (`engine/src/input.rs`)
 
 * miniquad 0.4.11 has no gamepad/device API, so `GamepadKeyEvent`s travel
   through a small `Mutex<Vec>` queue fed by a custom JNI export
@@ -170,10 +181,10 @@ physical display (1920×1080 ×4, 3840×2160 ×8, or letterboxed)
 
 ## Verification
 
-* `cargo test` — simulation, framebuffer and font unit tests.
+* `cargo test` (defaults to `-p snake`; engine tests via `cargo test -p engine`).
 * `cargo clippy --all-targets -- -D warnings`
 * `cargo fmt --check`
-* `cargo check --target armv7-linux-androideabi` /
-  `cargo check --target aarch64-linux-android` (no Android SDK required).
+* `cargo check -p snake --target armv7-linux-androideabi` /
+  `cargo check -p snake --target aarch64-linux-android` (no Android SDK required).
 * APK build requires the Android SDK/NDK, cargo-ndk and a JDK:
   `just apk` (defaults to `armeabi-v7a`).

@@ -122,7 +122,7 @@ pub(crate) fn android_keycode_to_input(keycode: i32) -> Option<Input> {
 }
 
 /// Per-player held-input state, maintained by the engine's edge detection and
-/// sampled by scenes during [`crate::engine::scene::Scene::update`] (e.g. to
+/// sampled by scenes during [`crate::scene::Scene::update`] (e.g. to
 /// read a held face button).
 #[derive(Clone)]
 pub struct InputState {

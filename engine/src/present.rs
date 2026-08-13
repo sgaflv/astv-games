@@ -1,4 +1,4 @@
-use crate::engine::{color, render};
+use crate::{color, render};
 
 use miniquad::{
     Bindings, BufferId, BufferLayout, BufferSource, BufferType, BufferUsage, FilterMode,

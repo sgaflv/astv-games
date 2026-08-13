@@ -1,7 +1,5 @@
-use crate::{
-    engine::{color::Color, render::Renderer},
-    game::SIM_FRAMES,
-};
+use crate::game::SIM_FRAMES;
+use engine::{color::Color, render::Renderer};
 
 /// The board is GRID_SIZE_X x GRID_SIZE_Y cells.
 pub const GRID_SIZE_X: i32 = 20;
@@ -351,7 +349,7 @@ fn draw_head_details(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::engine::render::Framebuffer;
+    use engine::render::Framebuffer;
 
     fn snake() -> Snake {
         Snake::spawn(

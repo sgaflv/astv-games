@@ -36,7 +36,7 @@ targets:
 
 # cargo check for both Android targets (no SDK required)
 check-android:
-    cargo check --target armv7-linux-androideabi
+    cargo check -p snake --target armv7-linux-androideabi
 
 # Build signed debug apk (cargo ndk + javac/d8 + aapt2/zipalign/apksigner)
 apk:
@@ -52,7 +52,7 @@ apk-arm64:
 
 # Build only native library
 ndk:
-    cargo ndk -t arm64-v8a build --release
+    cargo ndk -t arm64-v8a build -p snake --release
 
 # --------------------
 # Install

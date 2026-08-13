@@ -1,11 +1,11 @@
 //! Player-count selection screen: choose 1 or 2 players, then start the game.
 
-use crate::engine::color::Color;
-use crate::engine::font;
-use crate::engine::input::{Input, InputState};
-use crate::engine::render::{Framebuffer, Renderer};
-use crate::engine::scene::{Scene, SceneAction};
 use crate::play::Playing;
+use engine::color::Color;
+use engine::font;
+use engine::input::{Input, InputState};
+use engine::render::{Framebuffer, Renderer};
+use engine::scene::{Scene, SceneAction};
 
 // Menu visuals.
 const TITLE: &str = "SNAKE";

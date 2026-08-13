@@ -1,14 +1,14 @@
 //! Engine shell: the miniquad `EventHandler` that owns the framebuffer, the
 //! presenter, input routing, timing diagnostics and the currently active
-//! [`Scene`]. Nothing here is snake-specific; a game supplies its own scenes
-//! (see `crate::menu` / `crate::play` for an example) and the engine drives
+//! [`Scene`]. Nothing here is game-specific; a game supplies its own scenes
+//! (the `snake` package's `menu`/`play` are an example) and the engine drives
 //! them.
 
-use crate::engine::color::Color;
-use crate::engine::input::{Input, InputState};
-use crate::engine::present::Presenter;
-use crate::engine::render::{Framebuffer, Renderer};
-use crate::engine::scene::{Scene, SceneAction};
+use crate::color::Color;
+use crate::input::{Input, InputState};
+use crate::present::Presenter;
+use crate::render::{Framebuffer, Renderer};
+use crate::scene::{Scene, SceneAction};
 
 use miniquad::{EventHandler, KeyCode, KeyMods};
 
@@ -103,8 +103,8 @@ impl Stage {
     /// Drain device-aware gamepad events (Android). No-op on desktop.
     #[cfg(target_os = "android")]
     fn drain_player_input(&mut self) {
-        crate::engine::input::drain_into(|event| {
-            if let Some(input) = crate::engine::input::android_keycode_to_input(event.keycode) {
+        crate::input::drain_into(|event| {
+            if let Some(input) = crate::input::android_keycode_to_input(event.keycode) {
                 self.apply_input(event.player, event.keycode as u32, input, event.down);
             }
         });

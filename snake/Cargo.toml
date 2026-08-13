@@ -1,0 +1,17 @@
+[package]
+name = "snake"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "snake"
+path = "src/main.rs"
+
+[lib]
+name = "snake"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+engine = { path = "../engine" }
+miniquad = { version = "0.4", features = ["log-impl"] }
+rand = "0.10.2"
