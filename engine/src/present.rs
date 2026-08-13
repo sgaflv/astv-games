@@ -85,6 +85,7 @@ fn r8_texture_supported(ctx: &dyn RenderingBackend) -> bool {
 pub struct Presenter {
     ctx: Box<dyn RenderingBackend>,
     index_texture: TextureId,
+    palette_texture: TextureId,
     pipeline: Pipeline,
     quad: BufferId,
     bindings: Bindings,
@@ -151,8 +152,8 @@ impl Presenter {
                 sample_count: 1,
             },
         );
-        // The palette is fixed at construction and matches the framebuffer's
-        // default palette, so this upload happens once.
+        // Seeded with the default palette; the shell swaps it per scene with
+        // `set_palette`.
         ctx.texture_update(palette_texture, color::Palette::default().bytes());
 
         let shader = ctx
@@ -197,6 +198,7 @@ impl Presenter {
         let mut presenter = Presenter {
             ctx,
             index_texture,
+            palette_texture,
             pipeline,
             quad,
             bindings,
@@ -262,9 +264,17 @@ impl Presenter {
             .buffer_update(self.quad, BufferSource::slice(&vertices));
     }
 
+    /// Replace the 256x1 palette texture. Called when the active scene's
+    /// palette changes; `bytes` is the palette's flat RGB (`PALETTE_SIZE * 3`
+    /// bytes, see `Palette::bytes`).
+    pub fn set_palette(&mut self, bytes: &[u8]) {
+        self.ctx.texture_update(self.palette_texture, bytes);
+    }
+
     /// Upload the indexed framebuffer and present it, scaled to the screen.
-    /// The palette lookup happens in the shader.
-    pub fn present(&mut self, framebuffer: &render::Framebuffer) {
+    /// The palette lookup happens in the shader. `clear_color` paints the
+    /// letterbox bars so they blend with the frame edge.
+    pub fn present(&mut self, framebuffer: &render::Framebuffer, clear_color: color::Color) {
         let indices = framebuffer.pixels();
 
         if self.index_bpp == 1 {
@@ -281,13 +291,13 @@ impl Presenter {
             self.ctx.texture_update(self.index_texture, scratch);
         }
 
-        // Letterbox bars blend into the frame: must match game::BG_COLOR
-        // (13, 13, 18). Kept literal to avoid a render->game dependency.
+        // Letterbox bars blend into the frame: match the active scene's
+        // background color (its palette's `PAL_BG` slot).
         self.ctx
             .begin_default_pass(miniquad::PassAction::clear_color(
-                13.0 / 255.0,
-                13.0 / 255.0,
-                18.0 / 255.0,
+                clear_color.r as f32 / 255.0,
+                clear_color.g as f32 / 255.0,
+                clear_color.b as f32 / 255.0,
                 1.0,
             ));
 

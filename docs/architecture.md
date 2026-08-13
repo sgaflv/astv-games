@@ -33,32 +33,43 @@ them.
 | ----------------------------- | ----------------------------------------------------------- |
 | `Cargo.toml`                  | Workspace root: members `engine` + `snake` + `gibbon` + `app`, shared profiles |
 | `engine/Cargo.toml`           | `engine` package manifest (miniquad, font8x8, png)          |
-| `engine/build.rs`             | Embeds every file under `engine/assets/` into the binary    |
-| `engine/src/lib.rs`           | Engine module wiring (`app`, `assets`, `color`, `font`, `input`, `present`, `render`, `scene`, `sprites`) |
+| `engine/build_assets.rs`      | Shared build-script helper: embeds a crate's own `assets/`; `include!`-ed by each crate's `build.rs` |
+| `engine/src/lib.rs`           | Engine module wiring (`app`, `color`, `font`, `input`, `present`, `render`, `scene`, `sprites`) |
 | `engine/src/sprites.rs`       | `Sprite`/`SpriteSheet` decode + `RleSprite` (RLE) blit      |
 | `engine/src/input.rs`         | Device-aware Android gamepad queue + `surfaceOnPlayerKey` JNI export |
-| `engine/src/render.rs`        | `Renderer` trait, `Color`, `Palette`, indexed `Framebuffer`, `integer_scale` |
+| `engine/src/color.rs`           | `Color`, `Palette`: classic 16-color default + dynamic `add` (up to 254 slots, 255 = transparent) |
+| `engine/src/render.rs`          | `Renderer` trait, indexed `Framebuffer` + per-scene palette, `integer_scale` |
+| `engine/src/render.rs`          | `Renderer` trait, indexed `Framebuffer` + per-scene palette, `integer_scale` |
 | `engine/src/font.rs`          | 8x8 bitmap font blitting (font8x8), `text_width`            |
 | `engine/src/present.rs`       | `Presenter`: index + palette texture upload, palette-lookup shader, integer-scaled fullscreen quad |
 | `engine/src/app.rs`           | `Stage`: miniquad `EventHandler`, input, HUD               |
 | `engine/src/scene.rs`         | `Scene` trait + `SceneAction` (scenes decouple the games from the shell) |
-| `engine/src/assets.rs`        | Asset registry: look up embedded assets by file name        |
-| `engine/assets/apple_rotate.png` | Bundled sprite sheet asset                               |
 | `snake/Cargo.toml`            | `snake` package manifest (engine + rand)                    |
-| `snake/src/lib.rs`            | Module wiring (`game`, `play`, `snake`)                     |
+| `snake/build.rs`              | Embeds `snake/assets/` via `engine/build_assets.rs`         |
+| `snake/src/lib.rs`            | Module wiring (`assets`, `game`, `play`, `snake`)           |
+| `snake/src/assets.rs`         | `snake` asset registry: look up embedded assets by file name |
+| `snake/assets/apple_rotate.png` | Snake's bundled food sprite sheet                        |
 | `snake/src/snake.rs`          | Reusable `Snake`: body, direction, input queue, growth, drawing |
 | `snake/src/game.rs`           | `Game`: two snakes, shared food, tick clock, per-player input, drawing |
+| `snake/src/palette.rs`        | `snake`'s palette: the game's fixed colors added over the 16-color default |
 | `snake/src/play.rs`           | `Playing` scene: `Game` + fixed-timestep accumulator + pause |
 | `gibbon/Cargo.toml`           | `gibbon` package manifest (engine + rand)                   |
-| `gibbon/src/lib.rs`           | Module wiring (`game`, `play`, `snake`)                     |
+| `gibbon/build.rs`             | Embeds `gibbon/assets/` via `engine/build_assets.rs`        |
+| `gibbon/src/lib.rs`           | Module wiring (`assets`, `game`, `palette`, `play`, `snake`) |
+| `gibbon/src/assets.rs`        | `gibbon` asset registry: look up embedded assets by file name |
+| `gibbon/assets/apple_rotate.png` | Gibbon's bundled food sprite sheet                      |
 | `gibbon/src/snake.rs`         | Copy of `snake::snake` (the games can diverge)              |
-| `gibbon/src/game.rs`          | Copy of `snake::game` (identical behavior for now)          |
+| `gibbon/src/game.rs`          | Copy of `snake::game` (warm color theme, otherwise identical) |
+| `gibbon/src/palette.rs`       | `gibbon`'s palette: warm-theme fixed colors over the 16-color default |
 | `gibbon/src/play.rs`          | Copy of `snake::play` (`Playing` scene)                     |
 | `app/Cargo.toml`              | `app` package manifest (engine + miniquad + snake + gibbon) |
+| `app/build.rs`                | Embeds `app/assets/` via `engine/build_assets.rs`           |
 | `app/src/lib.rs`              | Module wiring, `Conf`, `desktop_main()`, Android `quad_main` |
 | `app/src/main.rs`             | Calls `app::desktop_main()` (desktop only)                  |
-| `app/src/game_select.rs`      | `GameSelect` screen + `GameKind`: choose the game before the player count |
-| `app/src/menu.rs`             | `Menu` scene: player-count selection, starts the chosen game |
+| `app/src/assets.rs`           | `app` asset registry: look up embedded assets by file name  |
+| `app/assets/`                 | Main-menu assets (currently empty; the registry is ready)   |
+| `app/src/game_select.rs`      | `GameSelect` screen + `GameKind`: choose the game; confirming creates the chosen game's instance |
+| `app/src/menu.rs`             | `Menu` scene + `PendingGame`: player-count selection, starts the held game |
 | `android/java/.../MainActivity.java` | Android activity glue (SurfaceView + lifecycle + gamepad device->player routing) |
 | `android/java/quad_native/QuadNative.java` | JNI declarations matched by miniquad 0.4 + `surfaceOnPlayerKey` |
 | `android/AndroidManifest.xml` | Manifest (regular Activity, TV leanback launcher)           |
@@ -89,7 +100,12 @@ them.
   (`TICK_STEPS = 30` steps per move), in lockstep, sharing one food.
 * `Game` owns `Vec<Snake>` (up to `PLAYERS = 2`), the shared `food`, the RNG
   (food respawn off any snake body) and the shared tick clock/`alpha()`.
-  `Game::new(players)` spawns 1 or 2 snakes; the menu chooses the count.
+  `Game::new(players)` spawns 1 or 2 snakes; the menu chooses the count via
+  `Playing::start`.
+* Colors are drawn as the palette's exact entries, so `game.rs`/`snake.rs` draw
+  with colors imported from the game's `palette.rs` (see
+  `snake/src/palette.rs`, `gibbon/src/palette.rs`), which `Playing::new` folds
+  into the scene palette.
 * Board: `GRID_SIZE_X = 20` x `GRID_SIZE_Y = 11` cells, 0-based coords
   (`x` in 0..20, `y` in 0..11, top-left origin), edges wrap.
 * Direction changes are buffered in a small ring buffer
@@ -106,37 +122,45 @@ them.
 * `Renderer` trait exposes only integer, top-left-origin calls, including
   `draw_rle_image` for sprite blits.
 * `Framebuffer` is a 480x270 indexed `Vec<u8>`: each pixel is one 8-bit index
-  into a 256-entry `Palette` (a third of the old RGB8 buffer). The game's
-  colors are pinned at fixed palette indices; `Palette::index_of` finds the
-  exact entry (or the nearest entry, used by `Palette::quantize_rgba` when
-  sprites are converted to palette indices at load time). All shapes are
-  clipped.
+  into a 256-entry `Palette` (a third of the old RGB8 buffer). Each game owns
+  its own palette (see "Game lifecycle & palettes"); the framebuffer's palette
+  is swapped to the active scene's. `Palette::add` appends a color, deduping
+  exact matches and falling back to the nearest defined color once 254 slots
+  are taken (index 255 is reserved for transparency); `Palette::index_of` finds
+  the exact entry. All shapes are clipped.
 * `integer_scale(w, h)` returns the largest integer scale that fits:
   `min(w/480, h/270).max(1)`.
 * Text uses the public-domain `font8x8::legacy::BASIC_LEGACY` bitmap font
   (8x8 glyphs, bit 7 = leftmost column, non-ASCII falls back to `?`).
 
-## Assets & sprites (`engine/build.rs`, `engine/src/assets.rs`, `engine/src/sprites.rs`)
+## Assets & sprites (`engine/build_assets.rs`, `engine/src/sprites.rs`)
 
-* `build.rs` scans `assets/` and emits a static `(name, bytes)` table that is
-  `include!`-ed into `src/assets.rs`, so every asset is embedded in the binary
-  and loadable by file name on desktop, Android and in tests.
-* `SpriteSheet::load(name, size_x, size_y, sprite_count)` decodes a PNG
-  (via the `png` crate) into RGBA8 and crops a horizontal strip of
+* The engine ships no game assets. Every game/screen crate (`snake`, `gibbon`,
+  `app`) owns its own `assets/` directory and embeds it with a three-line
+  `build.rs` that `include!`s the shared `engine/build_assets.rs` helper.
+* The helper scans `<crate>/assets/` and emits a static `(name, bytes)` table
+  that is `include!`-ed into the crate's `src/assets.rs`, so every asset is
+  embedded in the binary and loadable by file name on desktop, Android and in
+  tests. The games hand the bytes to `SpriteSheet::from_png` to decode.
+* `SpriteSheet::from_png(bytes, &mut palette, size_x, size_y, sprite_count)`
+  decodes a PNG (via the `png` crate) into RGBA8, quantizes it against the
+  game's palette (`Palette::quantize_rgba` — adding each color to the palette,
+  so the sprite owns exact entries) and crops a horizontal strip of
   `size_x` x `size_y` frames; `SpriteSheet::sprite(i)` returns a `Sprite`.
 * `SpriteSheet::to_rle()` encodes every frame once at load time into an
   `RleSprite` (a compact run-length stream of palette indices), which is what
   the game draws with: `RleSprite::draw(&mut renderer, x, y)` blits the frame
   through `Renderer::draw_rle_image`, writing only opaque runs so transparent
   pixels never touch the framebuffer.
-* The game's food uses the embedded `apple_rotate.png` sheet (12 frames of
+* Each game's food uses its own embedded `apple_rotate.png` sheet (12 frames of
   24x24, one board cell), animated one frame per snake move tick.
 
 ## Presentation (`engine/src/present.rs`)
 
 * Two textures: a 480x270 index texture (`FilterMode::Nearest`, no mipmaps)
   holding the framebuffer's 8-bit palette indices, and a 256x1 RGB8 palette
-  texture built once from the default `Palette`.
+  texture seeded with the default palette. When the active scene's palette
+  changes the shell calls `Presenter::set_palette` to re-upload it.
 * The fragment shader samples the index texture, multiplies the red channel
   by 255 to recover the index, and looks the color up in the palette texture,
   so the CPU never expands indices to RGB.
@@ -145,9 +169,38 @@ them.
   so there the presenter replicates each index across an RGB8 texture before
   upload; the shader reads `.r` either way.
 * Per frame: one index texture upload then a single fullscreen quad with vertex
-  positions recomputed on resize to center the integer-scaled viewport
-  (letterbox bars blend with the background color).
-* The clear color (13,13,18) matches the game background.
+  positions recomputed on resize to center the integer-scaled viewport.
+  `Presenter::present(fb, clear_color)` paints the letterbox bars with the
+  active scene's clear color — the default palette's black, or each game's
+  background color via `Scene::clear_color` — so they blend with each game's
+  frame edge.
+
+## Game lifecycle & palettes
+
+* A game instance (its decoded food sprites + palette) is created at the
+  **game-selection screen**: confirming `SNAKE`/`GIBBON` calls
+  `Playing::new()` and hands the instance to the player-count menu as a
+  `PendingGame`. Only the chosen game's palette and sprites are in memory at
+  any time.
+* The player-count menu holds the instance; Confirm calls `Playing::start(n)`
+  (spawning the snakes) and pushes the `Playing` scene. Back pops the menu,
+  dropping the instance; Back inside the game (`PopToRoot`) drops it too.
+* Each game owns a `Palette` built as the classic 16-color default (fixed
+  slots 0-15: black, blue, green, cyan, red, magenta, brown, light gray, gray,
+  and the bright variants; index 255 = transparent) plus the game's own fixed
+  colors (`BG`, `GRID`, snake colors, `EYE`, `TONGUE`, `HUD`) via
+  `Palette::add`. The games' background colors live in `snake/src/palette.rs`
+  (dark blue-black) and `gibbon/src/palette.rs` (warm purple-black), imported
+  by the game modules and drawn through `Renderer`.
+* `Playing::new` builds the game palette first, then decodes the food sprite
+  sheet against it (`from_png(&mut palette)`), which appends the sprite's
+  colors. The `Playing` scene keeps that palette and reports it as
+  `Scene::palette()`, so framebuffer indices always match the loaded sprites.
+* `Stage` swaps the framebuffer and presenter palette to `scene.palette()`
+  before each `draw`; the HUD text uses the fixed light-gray slot (always in
+  the default), and the letterbox uses `Scene::clear_color()` (default black;
+  each game returns its `BG`). Each game also paints its background in
+  `Playing::draw`, so the whole frame comes from one palette.
 
 ## App loop (`engine/src/app.rs`)
 
@@ -155,10 +208,13 @@ them.
   scene stack. Scene flow (in the `app` package): `GameSelect` (choose `SNAKE`
   or `GIBBON`) -> `Menu` (1 or 2 player selection for the chosen game) -> the
   chosen game's `Playing` scene (`snake::play::Playing` or
-  `gibbon::play::Playing`). The selection screens are navigated with the
-  direction keys (selection cycles) and confirmed with Enter/OK; Back pops one
-  level (`Menu` returns to `GameSelect`), and Back inside a game returns to
-  the root `GameSelect` (`PopToRoot`). Back on `GameSelect` quits the app.
+  `gibbon::play::Playing`). Confirming a game on `GameSelect` creates the
+  game instance immediately; the `Menu` holds it and starts it on Confirm. The
+  selection screens are navigated with the direction keys (selection cycles)
+  and confirmed with Enter/OK; Back pops one level (`Menu` returns to
+  `GameSelect`, dropping the game), and Back inside a game returns to the root
+  `GameSelect` (`PopToRoot`, also dropping the game). Back on `GameSelect`
+  quits the app.
 * `Input` (`Input` enum) maps Android TV/desktop keys to game actions.
   Player 1: DPAD/WASD + F1-F4; player 2: IJKL + F5-F8 (desktop) or the second
   gamepad (Android). Enter + Back/Escape + Menu/Space for global actions.

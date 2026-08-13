@@ -1,4 +1,5 @@
 use crate::game::SIM_FRAMES;
+use crate::palette::{EYE, TONGUE};
 use engine::{color::Color, render::Renderer};
 
 /// The board is GRID_SIZE_X x GRID_SIZE_Y cells.
@@ -281,9 +282,6 @@ impl Snake {
 
 // Drawing helpers (integer pixel arithmetic).
 
-const EYE_COLOR: Color = Color::rgb(13, 13, 13);
-const TONGUE_COLOR: Color = Color::rgb(230, 77, 77);
-
 /// Interpolated screen top-left of a segment during a tick.
 fn segment_screen(segment: Segment, frame_cnt: usize) -> (i32, i32) {
     let (px, py) = cell_screen(segment.previous);
@@ -329,7 +327,7 @@ fn draw_head_details(
         for sign in [-1, 1] {
             let ex = fx + px * sign * 3 - dx * 2;
             let ey = fy + py * sign * 3 - dy * 2;
-            r.fill_rect(ex - 1, ey - 1, 2, 2, EYE_COLOR);
+            r.fill_rect(ex - 1, ey - 1, 2, 2, EYE);
         }
     }
 
@@ -340,7 +338,7 @@ fn draw_head_details(
             for len in 1..=3 {
                 let tx = fx + dx * len + px * sign * len;
                 let ty = fy + dy * len + py * sign * len;
-                r.fill_rect(tx, ty, 1, 1, TONGUE_COLOR);
+                r.fill_rect(tx, ty, 1, 1, TONGUE);
             }
         }
     }
@@ -446,6 +444,8 @@ mod tests {
 
     fn draw_head_pixels(snake: &Snake) -> Vec<[u8; 3]> {
         let mut fb = Framebuffer::new();
+        // The snake's colors are only exact in the game's palette.
+        fb.set_palette(crate::palette::palette());
         fb.zero();
         snake.draw(&mut fb, SIM_FRAMES);
         let palette = fb.palette();
@@ -467,8 +467,8 @@ mod tests {
     #[test]
     fn face_details_are_drawn_by_default() {
         let pixels = draw_head_pixels(&snake());
-        assert!(has_pixel(&pixels, EYE_COLOR));
-        assert!(has_pixel(&pixels, TONGUE_COLOR));
+        assert!(has_pixel(&pixels, EYE));
+        assert!(has_pixel(&pixels, TONGUE));
     }
 
     #[test]
@@ -476,8 +476,8 @@ mod tests {
         let mut snake = snake();
         snake.tongue_hidden = true;
         let pixels = draw_head_pixels(&snake);
-        assert!(!has_pixel(&pixels, TONGUE_COLOR));
-        assert!(has_pixel(&pixels, EYE_COLOR));
+        assert!(!has_pixel(&pixels, TONGUE));
+        assert!(has_pixel(&pixels, EYE));
     }
 
     #[test]
@@ -485,8 +485,8 @@ mod tests {
         let mut snake = snake();
         snake.eyes_closed = true;
         let pixels = draw_head_pixels(&snake);
-        assert!(!has_pixel(&pixels, EYE_COLOR));
-        assert!(has_pixel(&pixels, TONGUE_COLOR));
+        assert!(!has_pixel(&pixels, EYE));
+        assert!(has_pixel(&pixels, TONGUE));
     }
 
     #[test]

@@ -183,6 +183,13 @@ impl Framebuffer {
         &self.palette
     }
 
+    /// Swap the palette this buffer is indexed against. Callers that change
+    /// the active scene's palette must also re-upload the palette texture
+    /// (see `Presenter::set_palette`).
+    pub fn set_palette(&mut self, palette: Palette) {
+        self.palette = palette;
+    }
+
     #[inline]
     fn set_pixel(&mut self, x: i32, y: i32, index: u8) {
         self.pixels[y as usize * WIDTH + x as usize] = index;
@@ -348,7 +355,7 @@ pub fn integer_scale(output_width: i32, output_height: i32) -> i32 {
 
 #[cfg(test)]
 mod tests {
-    use crate::color::{PALETTE_SIZE, TRANSPARENT};
+    use crate::color::{PAL_BRIGHT_WHITE, PALETTE_SIZE, TRANSPARENT};
 
     use super::*;
 
@@ -374,25 +381,54 @@ mod tests {
     }
 
     #[test]
-    fn palette_round_trips_the_game_colors_exactly() {
-        let palette = Palette::default();
-        let colors = [
-            Color::BLACK,
-            Color::WHITE,
-            Color::rgb(13, 13, 18),
-            Color::rgb(38, 38, 46),
-            Color::rgb(51, 204, 51),
-            Color::rgb(77, 148, 255),
-            Color::rgb(13, 13, 13),
-            Color::rgb(230, 77, 77),
-            Color::rgb(204, 204, 214),
-            Color::rgb(120, 120, 130),
-        ];
-        for color in colors {
-            let idx = palette.index_of(color);
-            assert_eq!(palette.rgb(idx), color, "nearest match must be exact");
-            assert_eq!(palette.bytes().len(), PALETTE_SIZE * 3);
+    fn default_palette_round_trips_the_sixteen_colors() {
+        let mut palette = Palette::default();
+        assert_eq!(palette.len(), 16);
+        assert_eq!(palette.bytes().len(), PALETTE_SIZE * 3);
+        for idx in 0..16 {
+            let color = palette.rgb(idx as u8);
+            // Each default slot is its own exact entry, found by index_of.
+            assert_eq!(palette.index_of(color), idx as u8);
+            assert_eq!(palette.add(color), idx as u8);
         }
+        // Arbitrary colors map to the nearest default entry (bright white for
+        // white).
+        assert_eq!(palette.index_of(Color::WHITE), PAL_BRIGHT_WHITE);
+    }
+
+    #[test]
+    fn add_extends_the_palette_and_dedups() {
+        let mut palette = Palette::default();
+
+        let a = palette.add(Color::rgb(13, 13, 18));
+        assert_eq!(a, 16);
+        assert_eq!(palette.len(), 17);
+
+        // Re-adding the same color reuses its slot.
+        assert_eq!(palette.add(Color::rgb(13, 13, 18)), a);
+        // An existing default color reuses its fixed slot.
+        assert_eq!(palette.add(Color::WHITE), PAL_BRIGHT_WHITE);
+        // index_of finds added colors exactly.
+        assert_eq!(palette.index_of(Color::rgb(13, 13, 18)), a);
+        assert_eq!(palette.rgb(a), Color::rgb(13, 13, 18));
+    }
+
+    #[test]
+    fn add_falls_back_to_nearest_when_full() {
+        let mut palette = Palette::default();
+        // Fill every usable slot (indices 16..=254) with distinct colors that
+        // collide with none of the 16 defaults.
+        while palette.len() < PALETTE_SIZE - 1 {
+            let c = palette.len() as u8;
+            palette.add(Color::rgb(c, 1, 2));
+        }
+        assert_eq!(palette.len(), PALETTE_SIZE - 1);
+
+        // No slot left: the nearest existing entry is returned, not appended,
+        // and the palette does not grow.
+        let near = palette.add(Color::rgb(1, 1, 1));
+        assert_eq!(palette.len(), PALETTE_SIZE - 1);
+        assert_eq!(near, palette.index_of(Color::rgb(1, 1, 1)));
     }
 
     #[test]
@@ -457,17 +493,21 @@ mod tests {
 
     #[test]
     fn quantize_rgba_thresholds_alpha() {
-        let palette = Palette::default();
+        let mut palette = Palette::default();
 
         // >= 50% transparent (alpha <= 128) becomes fully transparent.
         assert_eq!(palette.quantize_rgba([255, 0, 0, 128]), TRANSPARENT);
         assert_eq!(palette.quantize_rgba([255, 0, 0, 0]), TRANSPARENT);
 
-        // < 50% transparent becomes opaque and maps to the nearest entry.
-        let idx = palette.quantize_rgba([255, 255, 255, 255]);
+        // < 50% transparent becomes opaque and maps to its exact palette entry
+        // (adding the color if it was new).
+        let idx = palette.quantize_rgba([255, 255, 255, 129]);
         assert_eq!(palette.rgb(idx), Color::WHITE);
-        let idx = palette.quantize_rgba([255, 255, 255, 127]);
-        assert_eq!(palette.rgb(idx), Color::WHITE);
+
+        // A brand-new color is appended to the palette.
+        let idx = palette.quantize_rgba([13, 13, 18, 255]);
+        assert_eq!(palette.rgb(idx), Color::rgb(13, 13, 18));
+        assert_eq!(palette.len(), 17);
     }
 
     #[test]

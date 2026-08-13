@@ -5,9 +5,12 @@ use engine::font;
 use engine::input::{Input, InputState};
 use engine::render::{Framebuffer, Renderer};
 use engine::scene::{Scene, SceneAction};
+use gibbon::play::Playing as GibbonPlaying;
+use snake::play::Playing as SnakePlaying;
 
-/// The games that can be selected and played. The player-count menu
-/// (`crate::menu::Menu`) starts the scene for the chosen kind.
+/// The games that can be selected and played. Confirming a game creates its
+/// instance right here (see `Scene::input`), so only the chosen game's palette
+/// and sprites are in memory at a time.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum GameKind {
     Snake,
@@ -34,8 +37,9 @@ const TITLE_Y: i32 = 54;
 const OPTION_SCALE: i32 = 2;
 const OPTION_Y: i32 = 150;
 const OPTION_LINE: i32 = 36;
-const TEXT_COLOR: Color = Color::rgb(204, 204, 214);
-const DIM_COLOR: Color = Color::rgb(120, 120, 130);
+// Match the default palette's fixed slots exactly: light gray (7) and gray (8).
+const TEXT_COLOR: Color = Color::rgb(192, 192, 192);
+const DIM_COLOR: Color = Color::rgb(128, 128, 128);
 
 /// The game-selection screen, shown before the player count. Direction keys
 /// cycle the selection, Confirm (Enter/OK) opens the player-count menu for the
@@ -67,8 +71,14 @@ impl Scene for GameSelect {
                 SceneAction::Continue
             }
             Input::Confirm | Input::GameA | Input::GameB => {
-                let kind = GameKind::ALL[self.selection];
-                SceneAction::Push(Box::new(crate::menu::Menu::new(kind)))
+                // Create the selected game instance now: the palette and the
+                // decoded sprites stay alive while the player-count menu and
+                // the game run, and are dropped on exit.
+                let game = match GameKind::ALL[self.selection] {
+                    GameKind::Snake => crate::menu::PendingGame::Snake(SnakePlaying::new()),
+                    GameKind::Gibbon => crate::menu::PendingGame::Gibbon(GibbonPlaying::new()),
+                };
+                SceneAction::Push(Box::new(crate::menu::Menu::new(game)))
             }
             Input::Back => SceneAction::Quit,
             Input::Pause | Input::GameX | Input::GameY => SceneAction::Continue,

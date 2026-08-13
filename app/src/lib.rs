@@ -2,6 +2,7 @@
 //! entry points. The games themselves live in the `snake` and `gibbon`
 //! packages.
 
+pub mod assets;
 pub mod game_select;
 pub mod menu;
 

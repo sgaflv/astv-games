@@ -14,6 +14,7 @@
 //! Because the engine only sees the trait, the same engine shell can be reused
 //! for an entirely different game.
 
+use crate::color::{Color, Palette};
 use crate::input::{Input, InputState};
 use crate::render::Framebuffer;
 
@@ -57,6 +58,21 @@ pub trait Scene {
     /// Draw the scene into the framebuffer. The engine clears the framebuffer
     /// and presents it afterwards, so a scene only paints its own pixels.
     fn draw(&mut self, fb: &mut Framebuffer);
+
+    /// The palette this scene renders against. The engine swaps the
+    /// framebuffer and the presenter's palette texture to this before the
+    /// scene draws, so each game can own a different palette. Defaults to the
+    /// classic 16-color palette.
+    fn palette(&self) -> Palette {
+        Palette::default()
+    }
+
+    /// The color the letterbox bars blend with (the frame edge). Defaults to
+    /// black, matching the empty framebuffer; a game that paints its own
+    /// background overrides this to the same color.
+    fn clear_color(&self) -> Color {
+        Color::BLACK
+    }
 
     /// The window was minimized / the app was backgrounded: pause anything
     /// that should not advance while hidden.

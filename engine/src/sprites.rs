@@ -1,7 +1,7 @@
 //! Basic sprite support: a `Sprite` is a palette-indexed image (one byte per
 //! pixel, converted from RGBA at load time) that can be blitted onto the
 //! framebuffer; a `SpriteSheet` is a horizontal strip of equal-sized sprites
-//! loaded from an embedded PNG asset.
+//! decoded from a PNG supplied by the caller.
 //!
 //! `RleSprite` stores the same palette indices as a compact run-length-encoded
 //! stream (control bytes `xx yyyyyy`, see [`rle_encode`]) instead of one raw
@@ -9,11 +9,18 @@
 //! opaque runs. The stream is self-terminating, so the decoded size is the
 //! bounding box of the opaque pixels rather than a fixed frame size.
 //!
+//! The engine never owns game art; each game embeds its own assets and hands
+//! the bytes to [`SpriteSheet::from_png`]:
+//!
 //! ```no_run
+//! use engine::color::Palette;
 //! use engine::sprites::SpriteSheet;
 //!
-//! // 12 frames of 24x24 in assets/apple_rotate.png.
-//! let sheet = SpriteSheet::load("apple_rotate.png", 24, 24, 12)?;
+//! // Each game embeds its own art and decodes it against its palette; unseen
+//! // colors are added to the palette as they load.
+//! let data: &[u8] = &[]; // e.g. game::assets::load("apple_rotate.png")?
+//! let mut palette = Palette::default();
+//! let sheet = SpriteSheet::from_png(data, &mut palette, 24, 24, 12)?;
 //! let apple = sheet.to_rle()?;
 //! // apple[0].draw(&mut framebuffer, x, y);  // transparent pixels are skipped
 //! # Ok::<(), engine::sprites::SpriteError>(())
@@ -23,20 +30,18 @@ use std::error::Error;
 use std::fmt;
 use std::io::Cursor;
 
+use crate::color::Palette;
 use crate::color::TRANSPARENT;
 pub use crate::render::RleError;
 use crate::render::{CT_NEXT, CT_OPAQUE, CT_SKIP, MAX_RUN, Renderer, RleDecoder};
-use crate::{assets, color::Palette};
 
 /// Bytes per pixel in a decoded sprite.
 const CHANNELS: usize = 4;
 
-/// Errors raised while loading a sprite sheet.
+/// Errors raised while decoding a sprite sheet.
 #[derive(Debug)]
 pub enum SpriteError {
-    /// The requested file is not in the embedded `assets/` registry.
-    AssetNotFound(String),
-    /// The embedded data could not be decoded as a PNG.
+    /// The PNG data could not be decoded.
     Png(png::DecodingError),
     /// PNG data that is not 8-bit RGBA/RGB after transformation.
     UnsupportedFormat,
@@ -44,16 +49,13 @@ pub enum SpriteError {
     DimensionsMismatch { width: usize, height: usize },
     /// `sprite_count` must be non-zero.
     NoSprites,
-    /// The embedded data is not a valid RLE sprite stream.
+    /// The data is not a valid RLE sprite stream.
     Rle(RleError),
 }
 
 impl fmt::Display for SpriteError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            SpriteError::AssetNotFound(name) => {
-                write!(f, "asset not found in embedded assets/: {name}")
-            }
             SpriteError::Png(err) => write!(f, "failed to decode PNG: {err}"),
             SpriteError::UnsupportedFormat => {
                 write!(f, "unsupported PNG format (expected 8-bit RGBA)")
@@ -133,25 +135,16 @@ pub struct SpriteSheet {
 }
 
 impl SpriteSheet {
-    /// Load a sprite sheet from the embedded `assets/` directory.
-    ///
-    /// `name` is the file name relative to `assets/`, `size_x`/`size_y` the
-    /// size of one frame and `sprite_count` the number of frames laid out side
-    /// by side in the image.
-    pub fn load(
-        name: &str,
-        size_x: usize,
-        size_y: usize,
-        sprite_count: usize,
-    ) -> Result<SpriteSheet, SpriteError> {
-        let data =
-            assets::load(name).ok_or_else(|| SpriteError::AssetNotFound(name.to_string()))?;
-        SpriteSheet::from_png(data, size_x, size_y, sprite_count)
-    }
-
     /// Decode a sprite sheet from raw PNG bytes.
+    ///
+    /// `data` is the raw PNG, `palette` the palette the frames are quantized
+    /// against: colors not already present are added to it (see
+    /// [`Palette::add`]), so loading is what grows the game palette. `size_x`/
+    /// `size_y` are the size of one frame and `sprite_count` the number of
+    /// frames laid out side by side in the image.
     pub fn from_png(
         data: &[u8],
+        palette: &mut Palette,
         size_x: usize,
         size_y: usize,
         sprite_count: usize,
@@ -169,7 +162,6 @@ impl SpriteSheet {
 
         // Preprocess each frame into palette indices once, at load time, so
         // drawing is a pure blit (see `Palette::quantize_rgba`).
-        let palette = Palette::default();
         let mut frames = Vec::with_capacity(sprite_count);
         for frame in 0..sprite_count {
             let origin = frame * size_x;
@@ -343,13 +335,6 @@ impl RleSprite {
         })
     }
 
-    /// Load a pre-encoded RLE sprite from the embedded `assets/` directory.
-    pub fn load(name: &str) -> Result<RleSprite, SpriteError> {
-        let data =
-            assets::load(name).ok_or_else(|| SpriteError::AssetNotFound(name.to_string()))?;
-        RleSprite::new(data.to_vec()).map_err(SpriteError::Rle)
-    }
-
     /// Encode a palette-indexed sprite into RLE.
     pub fn from_sprite(sprite: &Sprite) -> Result<RleSprite, RleError> {
         RleSprite::new(rle_encode(sprite.pixels(), sprite.width()))
@@ -431,43 +416,49 @@ mod tests {
         render::{CT_COUNT, Framebuffer},
     };
 
-    fn apple_sheet() -> SpriteSheet {
-        SpriteSheet::load("apple_rotate.png", 24, 24, 12).expect("apple sheet loads")
+    /// Encode RGBA8 pixels into PNG bytes for synthetic test strips.
+    fn png_from_rgba(pixels: &[[u8; 4]], width: usize, height: usize) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        for pixel in pixels {
+            bytes.extend_from_slice(pixel);
+        }
+        let mut png_bytes = Vec::new();
+        {
+            let mut encoder = png::Encoder::new(&mut png_bytes, width as u32, height as u32);
+            encoder.set_color(png::ColorType::Rgba);
+            encoder.set_depth(png::BitDepth::Eight);
+            let mut writer = encoder.write_header().expect("png header");
+            writer
+                .write_image_data(&bytes)
+                .expect("png write image data");
+        }
+        png_bytes
     }
 
     #[test]
-    fn apple_sheet_has_twelve_frames() {
-        let sheet = apple_sheet();
-        assert_eq!(sheet.len(), 12);
-        assert_eq!(sheet.frame_size(), (24, 24));
+    fn sheet_reports_frame_geometry() {
+        // Synthetic 2-frame strip of 1x1 frames (2x1 PNG).
+        let png_bytes = png_from_rgba(&[[255, 0, 0, 255], [0, 0, 255, 255]], 2, 1);
+        let sheet = SpriteSheet::from_png(&png_bytes, &mut Palette::default(), 1, 1, 2)
+            .expect("2x1 sheet loads");
+        assert_eq!(sheet.len(), 2);
+        assert_eq!(sheet.frame_size(), (1, 1));
         for frame in 0..sheet.len() {
             let sprite = sheet.sprite(frame).expect("frame exists");
-            assert_eq!(sprite.width(), 24);
-            assert_eq!(sprite.height(), 24);
-            assert_eq!(sprite.pixels().len(), 24 * 24);
+            assert_eq!(sprite.width(), 1);
+            assert_eq!(sprite.height(), 1);
+            assert_eq!(sprite.pixels().len(), 1);
         }
     }
 
     #[test]
     fn frames_are_cropped_from_the_strip() {
         // Synthetic 2-frame strip: frame 0 all red, frame 1 all blue.
-        let mut strip = Vec::new();
-        for pixel in [[255, 0, 0, 255], [0, 0, 255, 255]] {
-            strip.extend_from_slice(&pixel);
-        }
-        let mut png_bytes = Vec::new();
-        {
-            let mut encoder = png::Encoder::new(&mut png_bytes, 2, 1);
-            encoder.set_color(png::ColorType::Rgba);
-            encoder.set_depth(png::BitDepth::Eight);
-            let mut writer = encoder.write_header().expect("png header");
-            writer
-                .write_image_data(&strip)
-                .expect("png write image data");
-        }
+        let png_bytes = png_from_rgba(&[[255, 0, 0, 255], [0, 0, 255, 255]], 2, 1);
 
-        let sheet = SpriteSheet::from_png(&png_bytes, 1, 1, 2).expect("2x1 sheet loads");
-        let palette = Palette::default();
+        let mut palette = Palette::default();
+        let sheet =
+            SpriteSheet::from_png(&png_bytes, &mut palette, 1, 1, 2).expect("2x1 sheet loads");
         assert_eq!(sheet.len(), 2);
         assert_eq!(
             sheet.sprite(0).unwrap().pixels(),
@@ -482,22 +473,11 @@ mod tests {
     #[test]
     fn loading_thresholds_alpha_into_transparency() {
         // 2x1 strip: opaque red, and a blue pixel that is 50% transparent.
-        let mut strip = Vec::new();
-        strip.extend_from_slice(&[255, 0, 0, 255]);
-        strip.extend_from_slice(&[0, 0, 255, 128]);
-        let mut png_bytes = Vec::new();
-        {
-            let mut encoder = png::Encoder::new(&mut png_bytes, 2, 1);
-            encoder.set_color(png::ColorType::Rgba);
-            encoder.set_depth(png::BitDepth::Eight);
-            let mut writer = encoder.write_header().expect("png header");
-            writer
-                .write_image_data(&strip)
-                .expect("png write image data");
-        }
+        let png_bytes = png_from_rgba(&[[255, 0, 0, 255], [0, 0, 255, 128]], 2, 1);
 
-        let sheet = SpriteSheet::from_png(&png_bytes, 2, 1, 1).expect("2x1 sheet loads");
-        let palette = Palette::default();
+        let mut palette = Palette::default();
+        let sheet =
+            SpriteSheet::from_png(&png_bytes, &mut palette, 2, 1, 1).expect("2x1 sheet loads");
         let indices = sheet.sprite(0).unwrap().pixels();
         assert_eq!(indices[0], palette.index_of(Color::rgb(255, 0, 0)));
         assert_eq!(indices[1], TRANSPARENT);
@@ -505,20 +485,13 @@ mod tests {
 
     #[test]
     fn bad_dimensions_are_rejected() {
-        let data = assets::load("apple_rotate.png").unwrap();
-        // Sheet is 288 wide; 12 frames of 24 expect exactly 288.
-        assert!(SpriteSheet::from_png(data, 24, 24, 12).is_ok());
-        assert!(SpriteSheet::from_png(data, 32, 24, 12).is_err());
-        assert!(SpriteSheet::from_png(data, 24, 32, 12).is_err());
-        assert!(SpriteSheet::from_png(data, 24, 24, 0).is_err());
-    }
-
-    #[test]
-    fn unknown_asset_is_an_error() {
-        assert!(matches!(
-            SpriteSheet::load("missing.png", 8, 8, 1),
-            Err(SpriteError::AssetNotFound(_))
-        ));
+        let png_bytes = png_from_rgba(&[[255, 0, 0, 255], [0, 0, 255, 255]], 2, 1);
+        let mut palette = Palette::default();
+        // 2 frames of 1x1 expect exactly 2 wide.
+        assert!(SpriteSheet::from_png(&png_bytes, &mut palette, 1, 1, 2).is_ok());
+        assert!(SpriteSheet::from_png(&png_bytes, &mut palette, 2, 1, 2).is_err());
+        assert!(SpriteSheet::from_png(&png_bytes, &mut palette, 1, 2, 2).is_err());
+        assert!(SpriteSheet::from_png(&png_bytes, &mut palette, 1, 1, 0).is_err());
     }
 
     #[test]

@@ -1,33 +1,52 @@
-//! Embeds every file under `assets/` into the binary so the game can load
-//! assets by file name on every platform (desktop, Android, tests) without
-//! touching the filesystem at runtime.
-//!
-//! The generated module (in OUT_DIR) exposes `ASSETS: &[(&str, &[u8])]` keyed
-//! by file name, plus a `load` helper is provided by `src/assets.rs`.
+// Shared build-script helper for embedding a crate's own assets.
+//
+// Each crate (`snake`, `gibbon`, `app`) keeps its art under its own `assets/`
+// directory and embeds it with a tiny `build.rs` that includes this file:
+//
+// ```rust
+// // <crate>/build.rs
+// include!("../engine/build_assets.rs");
+//
+// fn main() {
+//     embed_assets();
+// }
+// ```
+//
+// This writes `<OUT_DIR>/assets.rs` exposing `pub static ASSETS: &[(&str,
+// &[u8])]` keyed by file name, which the crate's `src/assets.rs` module
+// `include!`s. Assets are embedded at compile time, so games load them by file
+// name on every platform (desktop, Android, tests) without touching the
+// filesystem at runtime.
 
 use std::env;
 use std::fs;
 use std::path::Path;
 
-fn main() {
+// Embed every file under `<manifest>/assets/` into `OUT_DIR/assets.rs`.
+// Dotfiles (e.g. `.gitkeep`) are skipped so they never become assets.
+pub fn embed_assets() {
     let manifest_dir = env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR");
     let assets_dir = Path::new(&manifest_dir).join("assets");
     let out_dir = env::var("OUT_DIR").expect("OUT_DIR");
 
     let mut assets: Vec<(String, String)> = Vec::new();
     if assets_dir.is_dir() {
+        println!("cargo:rerun-if-changed={}", assets_dir.display());
         for entry in fs::read_dir(&assets_dir).expect("read assets dir") {
             let entry = entry.expect("read assets entry");
             let path = entry.path();
             if !path.is_file() {
                 continue;
             }
-            println!("cargo:rerun-if-changed={}", path.display());
             let name = path
                 .file_name()
                 .expect("asset file name")
                 .to_string_lossy()
                 .to_string();
+            if name.starts_with('.') {
+                continue;
+            }
+            println!("cargo:rerun-if-changed={}", path.display());
             assets.push((name, path.to_string_lossy().to_string()));
         }
     }

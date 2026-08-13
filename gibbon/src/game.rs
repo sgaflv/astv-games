@@ -1,11 +1,10 @@
 //! Game orchestration: two snakes on one board sharing a single food.
 
+pub use crate::palette::{GRID, SNAKE_COLORS};
 pub use crate::snake::{
     BOARD_PX, BOARD_PY, BOARD_X, BOARD_Y, CELL, Cell, Direction, GRID_SIZE_X, GRID_SIZE_Y, HUD_H,
     MAX_QUEUED_INPUTS, Segment, Snake,
 };
-use engine::color::Color;
-
 use engine::render::Renderer;
 use engine::sprites::RleSprite;
 
@@ -21,13 +20,6 @@ pub const SIM_FRAMES: usize = 24;
 
 /// Number of players (one snake each).
 pub const PLAYERS: usize = 2;
-
-// Palette
-const BG_COLOR: Color = Color::rgb(13, 13, 18);
-const GRID_COLOR: Color = Color::rgb(38, 38, 46);
-
-/// Per-player snake colors.
-const SNAKE_COLORS: [Color; PLAYERS] = [Color::rgb(51, 204, 51), Color::rgb(77, 148, 255)];
 
 /// Starting cells: player 0 top-left facing right, player 1 bottom-right
 /// facing left (mirrored spawns on the 20 x 11 board).
@@ -234,17 +226,13 @@ impl Game {
 fn draw_grid(r: &mut impl Renderer) {
     for i in 1..GRID_SIZE_X {
         let x = BOARD_X + i * CELL;
-        r.fill_rect(x, BOARD_Y, 1, BOARD_PY, GRID_COLOR);
+        r.fill_rect(x, BOARD_Y, 1, BOARD_PY, GRID);
     }
 
     for i in 1..GRID_SIZE_Y {
         let y = BOARD_Y + i * CELL;
-        r.fill_rect(BOARD_X, y, BOARD_PX, 1, GRID_COLOR);
+        r.fill_rect(BOARD_X, y, BOARD_PX, 1, GRID);
     }
-}
-
-pub const fn bg_color() -> Color {
-    BG_COLOR
 }
 
 #[cfg(test)]

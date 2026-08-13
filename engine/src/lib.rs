@@ -1,5 +1,4 @@
 pub mod app;
-pub mod assets;
 pub mod color;
 pub mod font;
 pub mod input;

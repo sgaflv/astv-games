@@ -4,7 +4,7 @@
 //! (the `app` package's `game_select`/`menu`/`play` are an example) and the
 //! engine drives them.
 
-use crate::color::Color;
+use crate::color::{PAL_LIGHT_GRAY, Palette};
 use crate::input::{Input, InputState};
 use crate::present::Presenter;
 use crate::render::{Framebuffer, Renderer};
@@ -22,7 +22,6 @@ const MAX_FRAME_TIME: f64 = 0.25;
 /// How often the engine's diagnostic HUD text is refreshed (avoid per-frame
 /// text blits).
 const HUD_REFRESH_EVERY: u32 = 30;
-const HUD_COLOR: Color = Color::rgb(204, 204, 214);
 const HUD_POS: (i32, i32) = (6, 6);
 
 /// The engine run loop: owns the framebuffer, presenter, timing/FPS stats,
@@ -37,6 +36,9 @@ pub struct Stage {
     stack: Vec<Box<dyn Scene>>,
     framebuffer: Framebuffer,
     presenter: Presenter,
+    /// The palette currently uploaded to the presenter and applied to the
+    /// framebuffer; swapped when the active scene's palette changes.
+    active_palette: Palette,
 
     // Timing.
     frame_start: f64,
@@ -69,6 +71,7 @@ impl Stage {
             stack: Vec::new(),
             framebuffer: Framebuffer::new(),
             presenter: Presenter::new(),
+            active_palette: Palette::default(),
             frame_start: now,
             frame_count: 0,
             fps_value: 0,
@@ -151,18 +154,30 @@ impl Stage {
     }
 
     /// Draw the engine's diagnostic overlay (FPS, render time, window, scale)
-    /// on top of whatever the scene painted.
+    /// on top of whatever the scene painted. The HUD uses the default
+    /// light-gray slot, which every palette contains.
     fn draw_hud(&mut self) {
         if self.hud_dirty {
             self.refresh_hud();
         }
+        let hud_color = self.active_palette.rgb(PAL_LIGHT_GRAY);
         self.framebuffer
-            .draw_text(HUD_POS.0, HUD_POS.1, 1, HUD_COLOR, &self.hud_buffer);
+            .draw_text(HUD_POS.0, HUD_POS.1, 1, hud_color, &self.hud_buffer);
     }
 
     fn render(&mut self) {
         // Start time measure.
         let t0 = miniquad::date::now();
+
+        // Swap to the scene's palette if it changed (e.g. a game scene became
+        // active). Games own per-game palettes; the shell keeps the framebuffer
+        // and the presenter's palette texture in sync.
+        let palette = self.scene.palette();
+        if palette != self.active_palette {
+            self.active_palette = palette;
+            self.framebuffer.set_palette(palette);
+            self.presenter.set_palette(palette.bytes());
+        }
 
         self.framebuffer.zero();
         self.scene.draw(&mut self.framebuffer);
@@ -173,7 +188,8 @@ impl Stage {
         self.render_time_accum += t1 - t0;
         self.render_time_frames += 1;
 
-        self.presenter.present(&self.framebuffer);
+        self.presenter
+            .present(&self.framebuffer, self.scene.clear_color());
     }
 }
 
