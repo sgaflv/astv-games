@@ -22,8 +22,12 @@ pub const TARGET_FRAMES: usize = 60;
 /// chasing a running gibbon keeps a constant distance.
 pub const SIM_FRAMES: usize = 24;
 
-/// A dug wooden tile stays open for DIG_TICKS
-const DIG_TICKS: usize = 10 * SIM_FRAMES;
+/// A dug wooden tile stays open for this many seconds.
+const DIG_SECONDS: usize = 5;
+
+/// The tile stays open for DIG_TICKS sim ticks: one sim tick lasts
+/// SIM_FRAMES/TARGET_FRAMES seconds, so `DIG_SECONDS` is about 13 sim ticks.
+const DIG_TICKS: usize = (DIG_SECONDS * TARGET_FRAMES + SIM_FRAMES / 2) / SIM_FRAMES;
 
 /// Starting lives.
 const LIVES: i32 = 3;
@@ -152,8 +156,9 @@ pub struct Game {
     pub gibbon: Actor,
     pub guards: Vec<Actor>,
 
-    /// The latched action (movement or dig command) the gibbon keeps going in it until the
-    /// way is blocked (a failed move clears it), so the key need not be held.
+    /// The current command. Movement latches: the gibbon keeps going in that
+    /// direction until the way is blocked (a failed move clears it), so the
+    /// key need not be held. A dig command fires once and resolves to `None`.
     pub action: Option<Action>,
 
     holes: Vec<Hole>,
@@ -261,9 +266,6 @@ impl Game {
     /// Perform a queued dig from `actor`'s cell.
     fn perform_dig(&mut self, side: i32, actor: Actor) {
         let (x, y) = (actor.x, actor.y);
-        if !self.tile(x, y + 1).is_solid() {
-            return; // must stand on a floor to dig it
-        }
         let (tx, ty) = (x + side, y + 1);
         if tx < 0 || tx >= GRID_X as i32 || ty < 0 || ty >= GRID_Y as i32 {
             return;
@@ -322,30 +324,51 @@ impl Game {
 
         gibbon.settle();
 
-        let falling = self.step_gravity(&mut gibbon);
-
-        if !falling && let Some(action) = self.action {
-            let target = self.target_of(gibbon, action);
-
-            if self.can_enter(
-                Cell {
-                    x: gibbon.x,
-                    y: gibbon.y,
-                },
-                target,
-                action,
-            ) {
-                gibbon.move_to(target.x, target.y, action);
-                // Stepping down off a ladder onto a railing hangs the gibbon:
-                // it stops there instead of climbing straight past it.
-                if action == Action::Down && self.tile(target.x, target.y) == Tile::Railing {
-                    self.action = None;
-                }
-            } else {
-                // The held direction can't be followed (a wall ahead, no
-                // ladder above/below): the gibbon stops and the player
-                // must press a direction again.
+        match self.action {
+            // A dig command spends the whole tick: it fires from the current
+            // cell even while airborne (stepping off a tile lets you dig it)
+            // and holds the fall back for that tick. It is not latched like
+            // movement, so it resolves back to no action.
+            Some(Action::DigLeft) => {
+                self.perform_dig(-1, gibbon);
                 self.action = None;
+            }
+            Some(Action::DigRight) => {
+                self.perform_dig(1, gibbon);
+                self.action = None;
+            }
+            Some(action) => {
+                let falling = self.step_gravity(&mut gibbon);
+
+                if !falling {
+                    let target = self.target_of(gibbon, action);
+
+                    if self.can_enter(
+                        Cell {
+                            x: gibbon.x,
+                            y: gibbon.y,
+                        },
+                        target,
+                        action,
+                    ) {
+                        gibbon.move_to(target.x, target.y, action);
+                        // Stepping down off a ladder onto a railing hangs the
+                        // gibbon: it stops there instead of climbing straight
+                        // past it.
+                        if action == Action::Down && self.tile(target.x, target.y) == Tile::Railing
+                        {
+                            self.action = None;
+                        }
+                    } else {
+                        // The held direction can't be followed (a wall ahead,
+                        // no ladder above/below): the gibbon stops and the
+                        // player must press a direction again.
+                        self.action = None;
+                    }
+                }
+            }
+            None => {
+                self.step_gravity(&mut gibbon);
             }
         }
 
@@ -358,28 +381,15 @@ impl Game {
         // distance, guard 1 the horizontal distance.
         for i in 0..self.guards.len() {
             let mut guard = self.guards[i];
-            let mut moved = false;
-            let dir = self.guard_action(guard, i % 2 == 0);
-            if let Some(dir) = dir {
+            guard.settle();
+
+            let falling = self.step_gravity(&mut guard);
+
+            if !falling && let Some(dir) = self.guard_action(guard, i % 2 == 0) {
                 let target = self.target_of(guard, dir);
-                if self.can_enter(
-                    Cell {
-                        x: guard.x,
-                        y: guard.y,
-                    },
-                    target,
-                    dir,
-                ) {
-                    guard.move_to(target.x, target.y, dir);
-                    moved = true;
-                }
+                guard.move_to(target.x, target.y, dir);
             }
-            if self.step_gravity(&mut guard) {
-                moved = true;
-            }
-            if !moved {
-                guard.settle();
-            }
+
             self.guards[i] = guard;
         }
 
@@ -389,14 +399,21 @@ impl Game {
             .iter()
             .any(|g| g.x == self.gibbon.x && g.y == self.gibbon.y)
         {
-            self.lives -= 1;
-            if self.lives > 0 {
-                self.game_state = State::Dead;
-                self.state_timer = DEAD_TICKS;
-            } else {
-                self.game_state = State::GameOver;
-                self.state_timer = 0;
-            }
+            self.lose_life();
+        }
+    }
+
+    /// The gibbon was caught or crushed: lose a life, pausing the action
+    /// until the respawn timer runs out (or ending the run when lives run
+    /// out).
+    fn lose_life(&mut self) {
+        self.lives -= 1;
+        if self.lives > 0 {
+            self.game_state = State::Dead;
+            self.state_timer = DEAD_TICKS;
+        } else {
+            self.game_state = State::GameOver;
+            self.state_timer = 0;
         }
     }
 
@@ -468,8 +485,7 @@ impl Game {
             Action::Up => {
                 target.y >= 0
                     && (target_tile == Tile::Ladder
-                        || current == Tile::Ladder
-                            && (target_tile == Tile::Railing || target_tile == Tile::Fruit))
+                        || current == Tile::Ladder && !target_tile.is_solid())
             }
             Action::Down => target.y < GRID_Y as i32 && !target_tile.is_solid(),
             Action::Left | Action::Right => {
@@ -554,26 +570,37 @@ impl Game {
         }
     }
 
-    /// Regrow dug tiles whose timer expired, once their cell is free.
+    /// Regrow dug tiles whose timer expired, crushing anyone standing on the
+    /// cell: the gibbon loses a life, a guard is sent back to its starting
+    /// position.
     fn update_holes(&mut self) {
         for hole in &mut self.holes {
             if hole.ticks > 0 {
                 hole.ticks -= 1;
             }
         }
+
+        let mut regrown = Vec::new();
         self.holes.retain(|hole| {
             if hole.ticks > 0 {
                 return true;
             }
-            let occupied = (self.gibbon.x == hole.x && self.gibbon.y == hole.y)
-                || self.guards.iter().any(|g| g.x == hole.x && g.y == hole.y);
-            if occupied {
-                return true; // wait for the cell to clear before regrowing
-            }
-            self.level
-                .set_tile(hole.x as usize, hole.y as usize, Tile::Wood);
+            regrown.push((hole.x, hole.y));
             false
         });
+
+        for &(x, y) in &regrown {
+            if self.gibbon.x == x && self.gibbon.y == y {
+                self.lose_life();
+            }
+            for i in 0..self.guards.len() {
+                if self.guards[i].x == x && self.guards[i].y == y {
+                    let (sx, sy) = self.level.guard_spawns[i];
+                    self.guards[i] = Actor::at(sx as i32, sy as i32);
+                }
+            }
+            self.level.set_tile(x as usize, y as usize, Tile::Wood);
+        }
     }
 
     // --- Drawing ------------------------------------------------------------
@@ -953,9 +980,10 @@ mod tests {
     }
 
     #[test]
-    fn climbing_stops_at_the_top_rung() {
-        // Ladder at x0 with open space above its top rung: the gibbon stops at
-        // the top rung and never leaves the ladder into the empty cell above.
+    fn climbing_up_onto_the_top_of_the_ladder() {
+        // Ladder at x0 with open space above its top rung: the gibbon climbs
+        // up and stands on top of the ladder (the open cell above the top
+        // rung) since nothing blocks it.
         let mut game = game(vec![level(
             "...................g\n\
              |..................g\n\
@@ -971,13 +999,13 @@ mod tests {
         )]);
         game.set_action(Some(Action::Up));
         advance(&mut game, 12);
-        assert_eq!(game.gibbon.y, 1); // top rung, not the open cell above it
+        assert_eq!(game.gibbon.y, 0); // the open cell on top of the ladder
         assert_eq!(game.gibbon.x, 0);
-        assert_eq!(game.action, None);
-        // Supported on the ladder: it does not fall back down.
+        assert_eq!(game.action, None); // nothing climbable above
+        // Supported by the ladder below: it does not fall back down.
         advance(&mut game, 5);
-        assert_eq!(game.gibbon.y, 1);
-        // It can still step off the top rung onto a neighbouring floor: with
+        assert_eq!(game.gibbon.y, 0);
+        // It can still step off the top onto a neighbouring cell: with
         // nothing below the neighbour it falls, exactly like walking off any
         // other open edge.
         game.set_action(Some(Action::Right));
@@ -986,7 +1014,7 @@ mod tests {
         // One tick later the fall is under way (the gravity check happens at
         // the start of the following tick, once the move has settled).
         advance(&mut game, 1);
-        assert!(game.gibbon.y > 1);
+        assert!(game.gibbon.y > 0);
     }
 
     #[test]
@@ -1099,7 +1127,7 @@ mod tests {
     }
 
     #[test]
-    fn digging_opens_a_hole_and_regrows_after_ten_seconds() {
+    fn digging_opens_a_hole_and_regrows_after_five_seconds() {
         // Gibbon stands on a wooden floor and digs the tile down-left.
         let mut game = game(vec![level(
             ".s..................g\n\
@@ -1108,7 +1136,7 @@ mod tests {
         )]);
         assert_eq!(game.level.tile(0, 1), Tile::Wood);
         game.set_action(Some(Action::DigLeft));
-        advance(&mut game, 1); // the queued dig fires once the move settles
+        advance(&mut game, 1);
         assert_eq!(game.level.tile(0, 1), Tile::Empty);
         assert_eq!(game.holes.len(), 1);
         // After the full dig time the wood regrows.
@@ -1118,15 +1146,90 @@ mod tests {
     }
 
     #[test]
-    fn digging_requires_solid_ground() {
-        // No floor under the gibbon: digging must fail.
+    fn regrowing_wood_crushes_a_gibbon_standing_in_it() {
+        // A gibbon trapped in a dug cell when the wood regrows loses a life
+        // and the level restarts (like being caught by a guard).
         let mut game = game(vec![level(
-            ".s..................g\n\
-             ....................",
+            ".s.................g\n\
+             ##..................#\n\
+             ####################",
         )]);
         game.set_action(Some(Action::DigLeft));
-        advance(&mut game, 1); // the queued dig fires and finds no floor
+        advance(&mut game, 1);
+        assert_eq!(game.level.tile(0, 1), Tile::Empty);
+        // Move the timer to just before regrow, then drop the gibbon into the
+        // hole (it is supported by the floor row below it).
+        advance(&mut game, DIG_TICKS - 1);
+        game.gibbon = Actor::at(0, 1);
+        let lives = game.lives;
+        advance(&mut game, 1);
+        assert_eq!(game.lives, lives - 1);
+        assert_eq!(game.game_state, State::Dead);
+        assert_eq!(game.level.tile(0, 1), Tile::Wood);
+    }
+
+    #[test]
+    fn regrowing_wood_respawns_a_guard_standing_in_it() {
+        // A guard standing in a dug cell when the wood regrows is sent back
+        // to its starting position immediately.
+        let mut game = game(vec![level(
+            ".s.................g\n\
+             ##..................#\n\
+             ####################",
+        )]);
+        game.set_action(Some(Action::DigLeft));
+        advance(&mut game, 1);
+        assert_eq!(game.level.tile(0, 1), Tile::Empty);
+        // One tick before the wood regrows, stand a guard in the hole.
+        advance(&mut game, DIG_TICKS - 1);
+        game.guards = vec![Actor::at(0, 1)];
+        game.update_holes();
+        let (sx, sy) = game.level.guard_spawns[0];
+        assert_eq!((game.guards[0].x, game.guards[0].y), (sx as i32, sy as i32));
+        assert_eq!(game.level.tile(0, 1), Tile::Wood);
         assert!(game.holes.is_empty());
+    }
+
+    #[test]
+    fn digging_works_while_airborne() {
+        // No solid ground under the gibbon: it can still dig a wooden tile
+        // diagonally below, spending the tick on digging instead of falling.
+        let mut game = game(vec![level(
+            ".s.................g\n\
+             #.#...................",
+        )]);
+        game.set_action(Some(Action::DigLeft));
+        advance(&mut game, 1);
+        assert_eq!(game.level.tile(0, 1), Tile::Empty);
+        assert_eq!(game.holes.len(), 1);
+        // The dig tick holds the fall: it has not left the start cell yet.
+        assert_eq!((game.gibbon.x, game.gibbon.y), (1, 0));
+    }
+
+    #[test]
+    fn digging_off_a_tile_digs_it_and_holds_the_fall() {
+        // Stepping right off a wooden floor and digging left digs the tile
+        // just left behind, even though the gibbon is airborne; the dig spends
+        // the tick, so the fall only starts afterwards.
+        let mut game = game(vec![level(
+            "...s................\n\
+             ####................\n\
+             ....................",
+        )]);
+        // Step right off the wood at x3 onto the open cell at x4.
+        game.set_action(Some(Action::Right));
+        advance(&mut game, 1);
+        assert_eq!((game.gibbon.x, game.gibbon.y), (4, 0));
+        // Dig left while airborne: the wood just left behind (3,1) is dug.
+        game.set_action(Some(Action::DigLeft));
+        advance(&mut game, 1);
+        assert_eq!(game.level.tile(3, 1), Tile::Empty);
+        assert_eq!(game.holes.len(), 1);
+        // It spent the tick digging, so it is still airborne at (4,0).
+        assert_eq!((game.gibbon.x, game.gibbon.y), (4, 0));
+        // With nothing to do, the fall resumes.
+        advance(&mut game, 1);
+        assert_eq!((game.gibbon.x, game.gibbon.y), (4, 1));
     }
 
     #[test]
@@ -1138,15 +1241,16 @@ mod tests {
              ....................",
         )]);
         game.set_action(Some(Action::DigLeft));
-        advance(&mut game, 1); // the queued dig fires at the settled cell
+        advance(&mut game, 1);
         assert!(game.holes.is_empty());
         assert_eq!(game.level.tile(0, 1), Tile::Brick);
     }
 
     #[test]
-    fn digging_waits_for_the_move_to_settle_and_stops() {
-        // Moving left and digging: the gibbon first finishes the move to the
-        // cell, only then it digs (down-left of the landing cell) and stops.
+    fn digging_replaces_the_movement_command_and_stops() {
+        // Moving left and digging: the dig command takes over from the held
+        // movement direction, fires once from the current cell (down-left of
+        // the landing cell) and resolves back to no action.
         let mut game = game(vec![level(
             "....s.................g\n\
              ####################\n\
@@ -1157,7 +1261,7 @@ mod tests {
         assert_eq!(game.gibbon.x, 2);
         game.set_action(Some(Action::DigLeft));
         advance(&mut game, 1);
-        // It settled at (2,0), dug the tile down-left and stopped.
+        // It dug the tile down-left from (2,0) and stopped.
         assert_eq!((game.gibbon.x, game.gibbon.y), (2, 0));
         assert_eq!(game.level.tile(1, 1), Tile::Empty);
         assert_eq!(game.action, None);
@@ -1217,8 +1321,19 @@ mod tests {
         game.gibbon = Actor::at(5, 0);
         game.guards = vec![Actor::at(0, 2)];
         assert_eq!(game.guard_action(game.guards[0], true), Some(Action::Right));
-        advance(&mut game, 4);
-        assert_eq!(game.guards[0].x, 4, "the guard walks toward the gibbon");
+        // Walks right across the wood floor to the edge of it.
+        advance(&mut game, 2);
+        assert_eq!((game.guards[0].x, game.guards[0].y), (2, 2));
+        // Past the edge there is nothing to stand on: gravity wins and it
+        // drops straight down instead of drifting right.
+        advance(&mut game, 2);
+        assert_eq!(game.guards[0].x, 2);
+        assert!(game.guards[0].y > 2);
+        // Once it lands on the bottom row it resumes closing the horizontal
+        // gap toward the gibbon.
+        advance(&mut game, 8);
+        assert_eq!(game.guards[0].y, GRID_Y as i32 - 1);
+        assert!(game.guards[0].x > 2);
     }
 
     #[test]

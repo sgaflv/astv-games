@@ -212,14 +212,19 @@ mod tests {
         visited.insert((sx, sy));
         let mut q = VecDeque::from([(sx, sy)]);
         while let Some((x, y)) = q.pop_front() {
-            // Climb up into a ladder/railing above. Climbing stops at the top
-            // rung: the actor never leaves the ladder into the open cell above
-            // it.
-            if y > 0 && is_lr(tiles, x, y - 1) {
-                let nxt = (x, y - 1);
-                if seen.insert(nxt) {
-                    visited.insert(nxt);
-                    q.push_back(nxt);
+            // Climb up: a ladder above is always climbable, and from a ladder
+            // any non-solid cell above (the top of the ladder) is reachable
+            // too.
+            if y > 0 {
+                let above = tile_at(tiles, x, y - 1);
+                if above == Some(Tile::Ladder)
+                    || (is_ladder(tiles, x, y) && !matches!(above, Some(t) if t.is_solid()))
+                {
+                    let nxt = (x, y - 1);
+                    if seen.insert(nxt) {
+                        visited.insert(nxt);
+                        q.push_back(nxt);
+                    }
                 }
             }
             if is_lr(tiles, x, y + 1) {
@@ -279,9 +284,6 @@ mod tests {
             let mut best_seen = seen.clone();
             let mut best_visited = visited.clone();
             for &(x, y) in &seen {
-                if !(y + 1 < GRID_Y as i32 && is_solid(&tiles, x, y + 1)) {
-                    continue; // must stand on a floor to dig
-                }
                 for side in [1, -1] {
                     let (tx, ty) = (x + side, y + 1);
                     if tx < 0 || tx >= GRID_X as i32 || ty < 0 || ty >= GRID_Y as i32 {
