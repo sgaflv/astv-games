@@ -21,8 +21,12 @@ use std::sync::{Mutex, OnceLock};
 /// Maximum number of players the engine routes input for.
 pub const PLAYERS: usize = 2;
 
+/// Number of analog axes forwarded per player, in index order:
+/// 0 = X (left stick), 1 = Y (left stick), 2 = D-pad hat X, 3 = D-pad hat Y.
+pub const AXIS_COUNT: usize = 4;
+
 /// Number of distinct logical inputs ([`Input`] variants).
-pub const INPUT_COUNT: usize = 11;
+pub const INPUT_COUNT: usize = 15;
 
 /// A logical game input, decoupled from any physical key or gamepad button.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -31,6 +35,14 @@ pub enum Input {
     Down,
     Left,
     Right,
+    // Analog stick directions (Android gamepads), kept distinct from the D-pad
+    // directions so a game can tell "user pushed the stick" from "user pressed
+    // the D-pad". Games opt into stick movement explicitly; nothing drives them
+    // yet. Keycode -> input mapping lives in `android_keycode_to_input`.
+    StickUp,
+    StickDown,
+    StickLeft,
+    StickRight,
     Confirm,
     Back,
     Pause,
@@ -51,13 +63,17 @@ const fn input_index(input: Input) -> usize {
         Input::Down => 1,
         Input::Left => 2,
         Input::Right => 3,
-        Input::Confirm => 4,
-        Input::Back => 5,
-        Input::Pause => 6,
-        Input::GameA => 7,
-        Input::GameB => 8,
-        Input::GameX => 9,
-        Input::GameY => 10,
+        Input::StickUp => 4,
+        Input::StickDown => 5,
+        Input::StickLeft => 6,
+        Input::StickRight => 7,
+        Input::Confirm => 8,
+        Input::Back => 9,
+        Input::Pause => 10,
+        Input::GameA => 11,
+        Input::GameB => 12,
+        Input::GameX => 13,
+        Input::GameY => 14,
     }
 }
 
@@ -118,6 +134,15 @@ pub(crate) fn android_keycode_to_input(keycode: i32) -> Option<Input> {
         97 => Some(Input::GameB),   // KEYCODE_BUTTON_B
         99 => Some(Input::GameX),   // KEYCODE_BUTTON_X
         100 => Some(Input::GameY),  // KEYCODE_BUTTON_Y
+        // Synthetic stick-direction codes emitted by the Java glue
+        // (`MainActivity.onGenericMotionEvent`) when the analog stick is
+        // pushed. Deliberately distinct from the D-pad keycodes above so stick
+        // input is never confused with D-pad input; 200-203 are unassigned in
+        // `android.view.KeyEvent`.
+        200 => Some(Input::StickUp),
+        201 => Some(Input::StickDown),
+        202 => Some(Input::StickLeft),
+        203 => Some(Input::StickRight),
         _ => None,
     }
 }
@@ -135,6 +160,10 @@ pub struct InputState {
     /// the same input (e.g. arrow-Up while W is held, or a second controller
     /// sharing the slot).
     held_keys: [[Option<u32>; INPUT_COUNT]; PLAYERS],
+    /// Latest analog axes per player (`[x, y, hat_x, hat_y]`, each in -1..=1).
+    /// Updated once per frame on Android from the device-aware queue; always
+    /// zero on desktop. Read by the keys tool to show live deflection.
+    axes: [[f32; AXIS_COUNT]; PLAYERS],
 }
 
 impl Default for InputState {
@@ -148,7 +177,23 @@ impl InputState {
         InputState {
             held: [[false; INPUT_COUNT]; PLAYERS],
             held_keys: [[None; INPUT_COUNT]; PLAYERS],
+            axes: [[0.0; AXIS_COUNT]; PLAYERS],
         }
+    }
+
+    /// Latest deflection of `axis` for `player`, in -1..=1. Axis indices are
+    /// the [`AXIS_COUNT`] order (0 = X, 1 = Y, 2 = hat X, 3 = hat Y).
+    pub fn axis(&self, player: usize, axis: usize) -> f32 {
+        if player < PLAYERS && axis < AXIS_COUNT {
+            self.axes[player][axis]
+        } else {
+            0.0
+        }
+    }
+
+    /// Replace the per-player axis snapshot (Android, once per frame).
+    pub fn set_axes(&mut self, axes: [[f32; AXIS_COUNT]; PLAYERS]) {
+        self.axes = axes;
     }
 
     /// Whether `input` is currently held down for `player`.
@@ -210,10 +255,37 @@ pub struct PlayerKeyEvent {
 
 static QUEUE: OnceLock<Mutex<Vec<PlayerKeyEvent>>> = OnceLock::new();
 
+/// Latest analog axes for all players, written by the JNI callback (UI thread)
+/// and snapshotted into `InputState` once per frame. Unlike the key queue this
+/// keeps only the newest value, because an axis position has no edges: every
+/// event fully replaces the previous one.
+static AXIS_STATE: OnceLock<Mutex<[[f32; AXIS_COUNT]; PLAYERS]>> = OnceLock::new();
+
 /// Set up the input queue. Android only (called from `quad_main`).
 #[cfg(target_os = "android")]
 pub fn init() {
     let _ = QUEUE.set(Mutex::new(Vec::new()));
+    let _ = AXIS_STATE.set(Mutex::new([[0.0; AXIS_COUNT]; PLAYERS]));
+}
+
+/// Record the latest axis position for `player` from a JNI callback (Android
+/// UI thread).
+#[cfg(target_os = "android")]
+pub fn set_axis(player: usize, axis: usize, value: f32) {
+    if player < PLAYERS && axis < AXIS_COUNT {
+        if let Some(state) = AXIS_STATE.get() {
+            state.lock().unwrap()[player][axis] = value;
+        }
+    }
+}
+
+/// Snapshot of the current axes for all players (zero on desktop, where the
+/// state is never set up). Called once per frame.
+pub fn axes() -> [[f32; AXIS_COUNT]; PLAYERS] {
+    match AXIS_STATE.get() {
+        Some(state) => *state.lock().unwrap(),
+        None => [[0.0; AXIS_COUNT]; PLAYERS],
+    }
 }
 
 /// Push a key event from a JNI callback (Android UI thread).
@@ -249,6 +321,8 @@ mod jni {
     pub type jobject = *mut _jobject;
     #[allow(non_camel_case_types)]
     pub type jint = i32;
+    #[allow(non_camel_case_types)]
+    pub type jfloat = f32;
 }
 
 /// Native implementation of `quad_native.QuadNative.surfaceOnPlayerKey`,
@@ -270,6 +344,27 @@ pub unsafe extern "C" fn Java_quad_1native_QuadNative_surfaceOnPlayerKey(
         keycode,
         down: down != 0,
     });
+}
+
+/// Native implementation of `quad_native.QuadNative.surfaceOnPlayerAxis`,
+/// declared in `android/java/quad_native/QuadNative.java`. Called from
+/// `MainActivity.onGenericMotionEvent` on the Android UI thread; forwards the
+/// live left-stick position (axis 0 = X, 1 = Y) so the keys tool can display
+/// the deflection.
+#[cfg(target_os = "android")]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn Java_quad_1native_QuadNative_surfaceOnPlayerAxis(
+    _env: *mut jni::JNIEnv,
+    _this: jni::jobject,
+    player: jni::jint,
+    axis: jni::jint,
+    value: jni::jfloat,
+) {
+    set_axis(
+        player.clamp(0, PLAYERS as i32 - 1) as usize,
+        axis.clamp(0, AXIS_COUNT as i32 - 1) as usize,
+        value,
+    );
 }
 
 #[cfg(test)]

@@ -25,4 +25,6 @@ public class QuadNative {
     // Implemented in the engine crate (input.rs) because miniquad 0.4 cannot
     // distinguish gamepads.
     public native static void surfaceOnPlayerKey(int player, int keycode, int down);
+    // Live analog stick axis (0 = X, 1 = Y) for a player slot, in -1..1.
+    public native static void surfaceOnPlayerAxis(int player, int axis, float value);
 }

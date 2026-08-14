@@ -5,7 +5,7 @@
 //! like in every other scene.
 
 use engine::color::{Color, Palette};
-use engine::input::{INPUT_COUNT, Input, InputState, PLAYERS};
+use engine::input::{AXIS_COUNT, INPUT_COUNT, Input, InputState, PLAYERS};
 use engine::render::{Framebuffer, Renderer};
 use engine::scene::{Scene, SceneAction};
 
@@ -24,6 +24,10 @@ const ALL_INPUTS: [Input; INPUT_COUNT] = [
     Input::Down,
     Input::Left,
     Input::Right,
+    Input::StickUp,
+    Input::StickDown,
+    Input::StickLeft,
+    Input::StickRight,
     Input::Confirm,
     Input::Back,
     Input::Pause,
@@ -37,7 +41,8 @@ const ALL_INPUTS: [Input; INPUT_COUNT] = [
 const TITLE_Y: i32 = 22;
 const PLAYER_Y: [i32; PLAYERS] = [62, 118];
 const HELD_Y: [i32; PLAYERS] = [86, 142];
-const LEGEND_Y: [i32; 3] = [200, 214, 228];
+const STICK_Y: [i32; PLAYERS] = [102, 158];
+const LEGEND_Y: [i32; 4] = [200, 214, 228, 242];
 
 /// Short label for a logical input.
 fn input_label(input: Input) -> &'static str {
@@ -46,6 +51,10 @@ fn input_label(input: Input) -> &'static str {
         Input::Down => "DOWN",
         Input::Left => "LEFT",
         Input::Right => "RIGHT",
+        Input::StickUp => "S_UP",
+        Input::StickDown => "S_DOWN",
+        Input::StickLeft => "S_LEFT",
+        Input::StickRight => "S_RIGHT",
         Input::Confirm => "OK",
         Input::Back => "BACK",
         Input::Pause => "PAUSE",
@@ -77,16 +86,21 @@ pub struct Keys {
     /// The held logical inputs per player, refreshed from `InputState` in
     /// `update`.
     held: [Vec<Input>; PLAYERS],
+    /// The last-seen analog axes per player (`[x, y, hat_x, hat_y]`, -1..=1),
+    /// refreshed from `InputState` in `update`. Zero on desktop.
+    sticks: [[f32; AXIS_COUNT]; PLAYERS],
 }
 
 impl Keys {
     pub fn new() -> Keys {
         Keys {
             held: [Vec::new(), Vec::new()],
+            sticks: [[0.0; AXIS_COUNT]; PLAYERS],
         }
     }
 
-    /// Snapshot the per-player held inputs for the next draw.
+    /// Snapshot the per-player held inputs and axis positions for the next
+    /// draw.
     fn refresh(&mut self, input: &InputState) {
         for player in 0..PLAYERS {
             self.held[player].clear();
@@ -96,6 +110,9 @@ impl Keys {
                     .copied()
                     .filter(|&i| input.held(player, i)),
             );
+            for axis in 0..AXIS_COUNT {
+                self.sticks[player][axis] = input.axis(player, axis);
+            }
         }
     }
 }
@@ -127,7 +144,10 @@ impl Scene for Keys {
         let tx = (w - engine::font::text_width(title, 2)) / 2;
         fb.draw_text(tx, TITLE_Y, 2, BRIGHT_WHITE, title);
 
-        for (player, (&ly, &hy)) in PLAYER_Y.iter().zip(HELD_Y.iter()).enumerate() {
+        for player in 0..PLAYERS {
+            let ly = PLAYER_Y[player];
+            let hy = HELD_Y[player];
+            let sy = STICK_Y[player];
             let label = format!("PLAYER {}", player + 1);
             fb.draw_text(16, ly, 2, BRIGHT_CYAN, &label);
             let held = held_text(&self.held[player]);
@@ -137,6 +157,11 @@ impl Scene for Keys {
                 BRIGHT_WHITE
             };
             fb.draw_text(16, hy, 2, color, &held);
+
+            let [x, y, ..] = self.sticks[player];
+            let stick = format!("STICK X {:+.0}% Y {:+.0}%", x * 100.0, y * 100.0);
+            let active = x.abs() > 0.01 || y.abs() > 0.01;
+            fb.draw_text(16, sy, 1, if active { BRIGHT_CYAN } else { GRAY }, &stick);
         }
 
         fb.draw_text(16, LEGEND_Y[0], 1, GRAY, "P1: ARROWS / WASD / F1-F4");
@@ -148,6 +173,7 @@ impl Scene for Keys {
             GRAY,
             "ENTER OK   ESC BACK   SPACE PAUSE",
         );
+        fb.draw_text(16, LEGEND_Y[3], 1, GRAY, "STICK = LIVE ANALOG DEFLECTION");
     }
 
     fn palette(&self) -> Palette {

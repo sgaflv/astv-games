@@ -70,28 +70,36 @@ impl Scene for GameSelect {
             return SceneAction::Continue;
         }
         match input {
-            Input::Up | Input::Down | Input::Left | Input::Right => {
+            Input::Up | Input::Down | Input::Left | Input::Right | Input::GameX => {
                 self.selection = (self.selection + 1) % GameKind::ALL.len();
                 SceneAction::Continue
             }
-            Input::Confirm | Input::GameA | Input::GameB => match GameKind::ALL[self.selection] {
-                // The key tester is a debug tool, not a game: no player-count
-                // menu, it starts straight into its scene.
-                GameKind::Keys => SceneAction::Push(Box::new(keys::Keys::new())),
-                // Create the selected game instance now: the palette and the
-                // decoded sprites stay alive while the player-count menu and
-                // the game run, and are dropped on exit.
-                GameKind::Snake => {
-                    let game = crate::menu::PendingGame::Snake(Box::new(SnakePlaying::new()));
-                    SceneAction::Push(Box::new(crate::menu::Menu::new(game)))
+            Input::Confirm | Input::GameA | Input::GameB | Input::GameY => {
+                match GameKind::ALL[self.selection] {
+                    // The key tester is a debug tool, not a game: no player-count
+                    // menu, it starts straight into its scene.
+                    GameKind::Keys => SceneAction::Push(Box::new(keys::Keys::new())),
+                    // Create the selected game instance now: the palette and the
+                    // decoded sprites stay alive while the player-count menu and
+                    // the game run, and are dropped on exit.
+                    GameKind::Snake => {
+                        let game = crate::menu::PendingGame::Snake(Box::new(SnakePlaying::new()));
+                        SceneAction::Push(Box::new(crate::menu::Menu::new(game)))
+                    }
+                    GameKind::Gibbon => {
+                        let game = crate::menu::PendingGame::Gibbon(Box::new(GibbonPlaying::new()));
+                        SceneAction::Push(Box::new(crate::menu::Menu::new(game)))
+                    }
                 }
-                GameKind::Gibbon => {
-                    let game = crate::menu::PendingGame::Gibbon(Box::new(GibbonPlaying::new()));
-                    SceneAction::Push(Box::new(crate::menu::Menu::new(game)))
-                }
-            },
+            }
             Input::Back => SceneAction::Quit,
-            Input::Pause | Input::GameX | Input::GameY => SceneAction::Continue,
+            // Stick directions never navigate the menus; D-pad is the primary
+            // directional control. Games opt into stick movement themselves.
+            Input::Pause
+            | Input::StickUp
+            | Input::StickDown
+            | Input::StickLeft
+            | Input::StickRight => SceneAction::Continue,
         }
     }
 
@@ -117,5 +125,13 @@ impl Scene for GameSelect {
             }
             fb.draw_text(x, y, OPTION_SCALE, color, label);
         }
+
+        fb.draw_text(
+            (w - font::text_width("X = NEXT   Y = OK", 1)) / 2,
+            OPTION_Y + GameKind::ALL.len() as i32 * OPTION_LINE + 10,
+            1,
+            DIM_COLOR,
+            "X = NEXT   Y = OK",
+        );
     }
 }

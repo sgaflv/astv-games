@@ -172,6 +172,105 @@ class QuadSurface
         return player;
     }
 
+    // Axis indices forwarded to the engine (must match AXIS_COUNT in input.rs):
+    // 0 = X, 1 = Y (left stick), 2 = hat X, 3 = hat Y (physical D-pad).
+    private static final int AXIS_X = 0;
+    private static final int AXIS_Y = 1;
+    private static final int AXIS_HAT_X = 2;
+    private static final int AXIS_HAT_Y = 3;
+
+    // Direction synthesis from analog input. Many gamepads report the D-pad as
+    // a hat switch and never emit KEYCODE_DPAD_* key events, so directions are
+    // derived here from the axes. The stick and the D-pad stay fully separate:
+    // the hat produces the standard D-pad keycodes (UP/DOWN/LEFT/RIGHT), while
+    // the stick produces synthetic codes 200-203 that the engine maps to its
+    // own StickUp/StickDown/StickLeft/StickRight inputs, so games can tell the
+    // two apart. Hysteresis keeps a slightly-off-center stick quiet; the hat is
+    // usually binary, so its band is tighter. Real D-pad key events still pass
+    // through onKey untouched.
+    private static final float STICK_PRESS = 0.55f;
+    private static final float STICK_RELEASE = 0.35f;
+    private static final float HAT_PRESS = 0.5f;
+    private static final float HAT_RELEASE = 0.25f;
+    // Synthetic stick-direction keycodes (must match the 200-203 arm of
+    // android_keycode_to_input in engine/src/input.rs). 200-203 are unassigned
+    // in android.view.KeyEvent.
+    private static final int STICK_UP = 200;
+    private static final int STICK_DOWN = 201;
+    private static final int STICK_LEFT = 202;
+    private static final int STICK_RIGHT = 203;
+    // Per player, per direction slot (0 = UP, 1 = DOWN, 2 = LEFT, 3 = RIGHT):
+    // whether a direction is currently synthesized from that source.
+    private final boolean[][] stickHeld = new boolean[2][4];
+    private final boolean[][] dpadHeld = new boolean[2][4];
+
+    // Emit one direction edge for a player, if the state actually changed.
+    private void setDirection(boolean[][] held, int player, int keyCode, int dir, boolean down) {
+        if (player < 0 || player >= held.length) {
+            return;
+        }
+        if (dir < 0 || dir >= held[player].length) {
+            return;
+        }
+        if (held[player][dir] == down) {
+            return;
+        }
+        held[player][dir] = down;
+        QuadNative.surfaceOnPlayerKey(player, keyCode, down ? 1 : 0);
+    }
+
+    // Move one direction's state from an axis value: press past `press`,
+    // release below `release` (hysteresis in between keeps the previous state).
+    private void updateDirection(boolean[][] held, int player, int keyCode, int dir, float value, float press, float release) {
+        if (player < 0 || player >= held.length) {
+            return;
+        }
+        if (dir < 0 || dir >= held[player].length) {
+            return;
+        }
+        if (!held[player][dir] && value >= press) {
+            setDirection(held, player, keyCode, dir, true);
+        } else if (held[player][dir] && value < release) {
+            setDirection(held, player, keyCode, dir, false);
+        }
+    }
+
+    // Gamepad analog input arrives as generic motion events (one ACTION_MOVE
+    // per axis change while the stick or hat moves). Derive directions from
+    // the axes and forward the raw values to the engine so the keys tool can
+    // display them as percentages.
+    @Override
+    public boolean onGenericMotionEvent(MotionEvent event) {
+        if ((event.getSource() & InputDevice.SOURCE_JOYSTICK) == 0) {
+            return super.onGenericMotionEvent(event);
+        }
+        int player = playerForDevice(event.getDeviceId());
+        if (player < 0) {
+            return super.onGenericMotionEvent(event);
+        }
+        float x = event.getAxisValue(MotionEvent.AXIS_X);
+        float y = event.getAxisValue(MotionEvent.AXIS_Y);
+        float hx = event.getAxisValue(MotionEvent.AXIS_HAT_X);
+        float hy = event.getAxisValue(MotionEvent.AXIS_HAT_Y);
+        QuadNative.surfaceOnPlayerAxis(player, AXIS_X, x);
+        QuadNative.surfaceOnPlayerAxis(player, AXIS_Y, y);
+        QuadNative.surfaceOnPlayerAxis(player, AXIS_HAT_X, hx);
+        QuadNative.surfaceOnPlayerAxis(player, AXIS_HAT_Y, hy);
+
+        // Left stick -> stick directions (Up is negative Y, right is positive
+        // X). Distinct keycodes, so the engine sees StickUp/StickDown/...
+        updateDirection(stickHeld, player, STICK_UP, 0, -y, STICK_PRESS, STICK_RELEASE);
+        updateDirection(stickHeld, player, STICK_DOWN, 1, y, STICK_PRESS, STICK_RELEASE);
+        updateDirection(stickHeld, player, STICK_LEFT, 2, -x, STICK_PRESS, STICK_RELEASE);
+        updateDirection(stickHeld, player, STICK_RIGHT, 3, x, STICK_PRESS, STICK_RELEASE);
+        // Physical D-pad hat -> D-pad directions.
+        updateDirection(dpadHeld, player, KeyEvent.KEYCODE_DPAD_UP, 0, -hy, HAT_PRESS, HAT_RELEASE);
+        updateDirection(dpadHeld, player, KeyEvent.KEYCODE_DPAD_DOWN, 1, hy, HAT_PRESS, HAT_RELEASE);
+        updateDirection(dpadHeld, player, KeyEvent.KEYCODE_DPAD_LEFT, 2, -hx, HAT_PRESS, HAT_RELEASE);
+        updateDirection(dpadHeld, player, KeyEvent.KEYCODE_DPAD_RIGHT, 3, hx, HAT_PRESS, HAT_RELEASE);
+        return true;
+    }
+
     // docs says getCharacters are deprecated
     // but somehow on non-latyn input all keyCode and all the relevant fields in the KeyEvent are zeros
     // and only getCharacters has some usefull data

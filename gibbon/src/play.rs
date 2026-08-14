@@ -230,9 +230,18 @@ impl Scene for Playing {
                     game.restart();
                 }
             }
-            // Directions are sampled as held state during `update`.
+            // Directions are sampled as held state during `update`. Stick
+            // directions are deliberately not game directions: D-pad is the
+            // primary control, stick movement would be wired in explicitly.
             Input::Up | Input::Down | Input::Left | Input::Right => {}
-            Input::GameA | Input::GameB | Input::GameX | Input::GameY => {}
+            Input::GameA
+            | Input::GameB
+            | Input::GameX
+            | Input::GameY
+            | Input::StickUp
+            | Input::StickDown
+            | Input::StickLeft
+            | Input::StickRight => {}
         }
         SceneAction::Continue
     }

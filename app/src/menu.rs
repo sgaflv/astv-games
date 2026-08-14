@@ -103,7 +103,13 @@ impl Scene for Menu {
                 SceneAction::Push(game.start(players))
             }
             Input::Back => SceneAction::Pop,
-            Input::Pause | Input::GameX | Input::GameY => SceneAction::Continue,
+            Input::Pause
+            | Input::GameX
+            | Input::GameY
+            | Input::StickUp
+            | Input::StickDown
+            | Input::StickLeft
+            | Input::StickRight => SceneAction::Continue,
         }
     }
 

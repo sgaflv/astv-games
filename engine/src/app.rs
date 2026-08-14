@@ -137,6 +137,7 @@ impl Stage {
                 self.apply_input(event.player, event.keycode as u32, input, event.down);
             }
         });
+        self.input_state.set_axes(crate::input::axes());
     }
 
     fn refresh_hud(&mut self) {

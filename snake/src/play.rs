@@ -95,8 +95,18 @@ impl Scene for Playing {
             Input::Right => game.queue_direction(player, Direction::Right),
             Input::Pause => self.pause_requested = true,
             Input::Back => return SceneAction::PopToRoot,
-            // Face buttons are sampled as held state during `update`.
-            Input::Confirm | Input::GameA | Input::GameB | Input::GameX | Input::GameY => {}
+            // Face buttons are sampled as held state during `update`. Stick
+            // directions are deliberately not game directions: D-pad is the
+            // primary control, stick movement would be wired in explicitly.
+            Input::Confirm
+            | Input::GameA
+            | Input::GameB
+            | Input::GameX
+            | Input::GameY
+            | Input::StickUp
+            | Input::StickDown
+            | Input::StickLeft
+            | Input::StickRight => {}
         }
         SceneAction::Continue
     }
