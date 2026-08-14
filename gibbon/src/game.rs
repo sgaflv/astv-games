@@ -117,10 +117,26 @@ impl Actor {
     }
 }
 
-/// A dug-out wooden tile waiting to regrow.
+/// Phase of a dug wooden tile.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum HolePhase {
+    /// The wood is being destroyed: the pit is already open and the tile
+    /// sinks away over SIM_FRAMES frames.
+    Digging,
+    /// The pit stays open while the wood regrows.
+    Regrowing,
+    /// The wood is growing back over SIM_FRAMES frames.
+    Restoring,
+}
+
+/// A dug-out wooden tile.
 struct Hole {
     x: i32,
     y: i32,
+    phase: HolePhase,
+    /// Frames of the dig-destruction animation left.
+    frames: usize,
+    /// Sim ticks until the wood regrows once the animation has finished.
     ticks: usize,
 }
 
@@ -263,27 +279,78 @@ impl Game {
         self.action = action;
     }
 
-    /// Perform a queued dig from `actor`'s cell.
-    fn perform_dig(&mut self, side: i32, actor: Actor) {
+    /// Perform a queued dig from `actor`'s cell, returning whether a hole was
+    /// actually dug.
+    fn perform_dig(&mut self, side: i32, actor: Actor) -> bool {
         let (x, y) = (actor.x, actor.y);
         let (tx, ty) = (x + side, y + 1);
         if tx < 0 || tx >= GRID_X as i32 || ty < 0 || ty >= GRID_Y as i32 {
-            return;
+            return false;
+        }
+        // A wall or wood right above the target blocks the dig.
+        if self.tile(x + side, y).is_solid() {
+            return false;
         }
         if self.level.tile(tx as usize, ty as usize) != Tile::Wood {
-            return;
+            return false;
         }
         self.level.set_tile(tx as usize, ty as usize, Tile::Empty);
         self.holes.push(Hole {
             x: tx,
             y: ty,
+            phase: HolePhase::Digging,
+            frames: SIM_FRAMES,
             ticks: DIG_TICKS,
         });
+        true
+    }
+
+    /// Advance the hole animations by one frame: the dug tile sinks away over
+    /// SIM_FRAMES frames, and later the regrown wood rises back over the same
+    /// number of frames. Only once the restoration is complete is the cell
+    /// turned back into wood and anyone standing on it crushed.
+    fn animate_digs(&mut self) {
+        let mut regrown = Vec::new();
+        for (i, hole) in self.holes.iter_mut().enumerate() {
+            match hole.phase {
+                HolePhase::Digging => {
+                    hole.frames -= 1;
+                    if hole.frames == 0 {
+                        hole.phase = HolePhase::Regrowing;
+                    }
+                }
+                HolePhase::Restoring => {
+                    hole.frames -= 1;
+                    if hole.frames == 0 {
+                        regrown.push((i, hole.x, hole.y));
+                    }
+                }
+                HolePhase::Regrowing => {}
+            }
+        }
+
+        for &(i, _, _) in regrown.iter().rev() {
+            self.holes.remove(i);
+        }
+
+        for &(_, x, y) in &regrown {
+            if self.gibbon.x == x && self.gibbon.y == y {
+                self.lose_life();
+            }
+            for i in 0..self.guards.len() {
+                if self.guards[i].x == x && self.guards[i].y == y {
+                    let (sx, sy) = self.level.guard_spawns[i];
+                    self.guards[i] = Actor::at(sx as i32, sy as i32);
+                }
+            }
+            self.level.set_tile(x as usize, y as usize, Tile::Wood);
+        }
     }
 
     /// Advance one fixed simulation step.
     pub fn step(&mut self) {
         self.frame_cnt += 1;
+        self.animate_digs();
 
         if self.frame_cnt >= SIM_FRAMES {
             self.frame_cnt = 0;
@@ -325,16 +392,21 @@ impl Game {
         gibbon.settle();
 
         match self.action {
-            // A dig command spends the whole tick: it fires from the current
-            // cell even while airborne (stepping off a tile lets you dig it)
-            // and holds the fall back for that tick. It is not latched like
-            // movement, so it resolves back to no action.
+            // A dig command fires from the current cell even while airborne
+            // (stepping off a tile lets you dig it). Only a successful dig
+            // spends the whole tick and holds the fall back; with nothing to
+            // dig it is a no-op and the fall continues. It is not latched
+            // like movement, so it resolves back to no action.
             Some(Action::DigLeft) => {
-                self.perform_dig(-1, gibbon);
+                if !self.perform_dig(-1, gibbon) {
+                    self.step_gravity(&mut gibbon);
+                }
                 self.action = None;
             }
             Some(Action::DigRight) => {
-                self.perform_dig(1, gibbon);
+                if !self.perform_dig(1, gibbon) {
+                    self.step_gravity(&mut gibbon);
+                }
                 self.action = None;
             }
             Some(action) => {
@@ -573,33 +645,18 @@ impl Game {
     /// Regrow dug tiles whose timer expired, crushing anyone standing on the
     /// cell: the gibbon loses a life, a guard is sent back to its starting
     /// position.
+    /// Count down the regrow timer: once it expires the wood starts growing
+    /// back over SIM_FRAMES frames (the crush happens when that finishes, in
+    /// [`Game::animate_digs`]).
     fn update_holes(&mut self) {
         for hole in &mut self.holes {
-            if hole.ticks > 0 {
+            if hole.phase == HolePhase::Regrowing && hole.ticks > 0 {
                 hole.ticks -= 1;
-            }
-        }
-
-        let mut regrown = Vec::new();
-        self.holes.retain(|hole| {
-            if hole.ticks > 0 {
-                return true;
-            }
-            regrown.push((hole.x, hole.y));
-            false
-        });
-
-        for &(x, y) in &regrown {
-            if self.gibbon.x == x && self.gibbon.y == y {
-                self.lose_life();
-            }
-            for i in 0..self.guards.len() {
-                if self.guards[i].x == x && self.guards[i].y == y {
-                    let (sx, sy) = self.level.guard_spawns[i];
-                    self.guards[i] = Actor::at(sx as i32, sy as i32);
+                if hole.ticks == 0 {
+                    hole.phase = HolePhase::Restoring;
+                    hole.frames = SIM_FRAMES;
                 }
             }
-            self.level.set_tile(x as usize, y as usize, Tile::Wood);
         }
     }
 
@@ -633,7 +690,19 @@ impl Game {
             }
         }
         for hole in &self.holes {
-            draw_hole(r, hole.x, hole.y);
+            match hole.phase {
+                HolePhase::Digging => {
+                    let (px, py) = cell_screen(hole.x, hole.y);
+                    let k = (SIM_FRAMES - hole.frames) * CELL as usize / SIM_FRAMES;
+                    draw_digging(r, px, py, k as i32);
+                }
+                HolePhase::Restoring => {
+                    let (px, py) = cell_screen(hole.x, hole.y);
+                    let k = hole.frames * CELL as usize / SIM_FRAMES;
+                    draw_digging(r, px, py, k as i32);
+                }
+                HolePhase::Regrowing => draw_hole(r, hole.x, hole.y),
+            }
         }
     }
 
@@ -741,6 +810,14 @@ fn draw_hole(r: &mut impl Renderer, x: i32, y: i32) {
     let (px, py) = cell_screen(x, y);
     r.fill_rect(px, py + 3, CELL, CELL - 3, HOLE);
     r.fill_rect(px, py + 3, CELL, 1, HOLE_EDGE);
+}
+
+/// Draw a wooden tile sinking away: the pit opens from the top of the cell
+/// and the remaining wood drops down over the dig animation.
+fn draw_digging(r: &mut impl Renderer, x: i32, y: i32, k: i32) {
+    draw_wood(r, x, y);
+    r.fill_rect(x, y, CELL, k, HOLE);
+    r.fill_rect(x, y + k, CELL, 1, HOLE_EDGE);
 }
 
 #[cfg(test)]
@@ -1162,7 +1239,9 @@ mod tests {
         advance(&mut game, DIG_TICKS - 1);
         game.gibbon = Actor::at(0, 1);
         let lives = game.lives;
-        advance(&mut game, 1);
+        // One tick ends the countdown and starts the wood rising back; the
+        // following tick completes the restoration and crushes the gibbon.
+        advance(&mut game, 2);
         assert_eq!(game.lives, lives - 1);
         assert_eq!(game.game_state, State::Dead);
         assert_eq!(game.level.tile(0, 1), Tile::Wood);
@@ -1180,14 +1259,74 @@ mod tests {
         game.set_action(Some(Action::DigLeft));
         advance(&mut game, 1);
         assert_eq!(game.level.tile(0, 1), Tile::Empty);
-        // One tick before the wood regrows, stand a guard in the hole.
+        // One tick before the wood regrows, stand a guard in the hole. The
+        // next update ends the countdown and starts the restoration.
         advance(&mut game, DIG_TICKS - 1);
         game.guards = vec![Actor::at(0, 1)];
         game.update_holes();
+        assert!(matches!(game.holes[0].phase, HolePhase::Restoring));
+        assert_eq!(game.level.tile(0, 1), Tile::Empty);
+        // Complete the restoration: only then is the guard sent back.
+        for _ in 0..SIM_FRAMES {
+            game.animate_digs();
+        }
         let (sx, sy) = game.level.guard_spawns[0];
         assert_eq!((game.guards[0].x, game.guards[0].y), (sx as i32, sy as i32));
         assert_eq!(game.level.tile(0, 1), Tile::Wood);
         assert!(game.holes.is_empty());
+    }
+
+    #[test]
+    fn dug_wood_destroys_over_one_cell_time() {
+        // The pit is open the moment the dig fires, but the tile sinks away
+        // over exactly SIM_FRAMES frames (the time to travel one cell).
+        let mut game = game(vec![level(
+            ".s..................g\n\
+             ##..................\n\
+             ....................",
+        )]);
+        game.set_action(Some(Action::DigLeft));
+        advance(&mut game, 1);
+        assert_eq!(game.holes.len(), 1);
+        assert!(matches!(game.holes[0].phase, HolePhase::Digging));
+        assert_eq!(game.holes[0].frames, SIM_FRAMES);
+        assert_eq!(game.level.tile(0, 1), Tile::Empty);
+        // Still sinking for the first SIM_FRAMES - 1 frames...
+        for _ in 0..SIM_FRAMES - 1 {
+            game.step();
+            assert!(matches!(game.holes[0].phase, HolePhase::Digging));
+        }
+        // ...and fully gone on the SIM_FRAMES-th frame.
+        game.step();
+        assert!(matches!(game.holes[0].phase, HolePhase::Regrowing));
+    }
+
+    #[test]
+    fn wood_restores_over_one_cell_time() {
+        // After the regrow countdown the wood grows back over exactly
+        // SIM_FRAMES frames; the cell stays a usable pit until the end.
+        let mut game = game(vec![level(
+            ".s..................g\n\
+             ##..................\n\
+             ....................",
+        )]);
+        game.set_action(Some(Action::DigLeft));
+        advance(&mut game, 1);
+        // Dig animation (1 tick) plus the full regrow countdown.
+        advance(&mut game, DIG_TICKS);
+        assert!(matches!(game.holes[0].phase, HolePhase::Restoring));
+        assert_eq!(game.holes[0].frames, SIM_FRAMES);
+        assert_eq!(game.level.tile(0, 1), Tile::Empty);
+        // Still restoring for the first SIM_FRAMES - 1 frames...
+        for _ in 0..SIM_FRAMES - 1 {
+            game.step();
+            assert!(matches!(game.holes[0].phase, HolePhase::Restoring));
+            assert_eq!(game.level.tile(0, 1), Tile::Empty);
+        }
+        // ...and fully back on the SIM_FRAMES-th frame.
+        game.step();
+        assert!(game.holes.is_empty());
+        assert_eq!(game.level.tile(0, 1), Tile::Wood);
     }
 
     #[test]
@@ -1244,6 +1383,45 @@ mod tests {
         advance(&mut game, 1);
         assert!(game.holes.is_empty());
         assert_eq!(game.level.tile(0, 1), Tile::Brick);
+    }
+
+    #[test]
+    fn a_failed_dig_does_not_hold_the_fall() {
+        // Nothing wooden to dig: the command is a no-op and the fall goes on.
+        let mut game = game(vec![level(
+            ".s.................g\n\
+             ....................",
+        )]);
+        game.set_action(Some(Action::DigLeft));
+        advance(&mut game, 1);
+        assert!(game.holes.is_empty());
+        assert_eq!((game.gibbon.x, game.gibbon.y), (1, 1));
+    }
+
+    #[test]
+    fn digging_is_blocked_by_a_solid_cell_above_the_target() {
+        // The tile right above the target is wood: the dig is blocked.
+        let mut game = game(vec![level(
+            "#s...................\n\
+             #.#...................",
+        )]);
+        game.set_action(Some(Action::DigLeft));
+        advance(&mut game, 1);
+        assert!(game.holes.is_empty());
+        assert_eq!(game.level.tile(0, 1), Tile::Wood);
+    }
+
+    #[test]
+    fn digging_is_blocked_by_a_wall_above_the_target() {
+        // The tile right above the target is brick: the dig is blocked.
+        let mut game = game(vec![level(
+            "*s...................\n\
+             #.#...................",
+        )]);
+        game.set_action(Some(Action::DigLeft));
+        advance(&mut game, 1);
+        assert!(game.holes.is_empty());
+        assert_eq!(game.level.tile(0, 1), Tile::Wood);
     }
 
     #[test]

@@ -293,6 +293,10 @@ mod tests {
                     if tiles[idx] != Tile::Wood {
                         continue;
                     }
+                    // A wall or wood right above the target blocks the dig.
+                    if is_solid(&tiles, tx, y) {
+                        continue;
+                    }
                     tiles[idx] = Tile::Empty;
                     let (ns, nv) = closure(&tiles, spawn);
                     tiles[idx] = Tile::Wood;
