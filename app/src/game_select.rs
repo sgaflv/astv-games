@@ -8,18 +8,21 @@ use engine::scene::{Scene, SceneAction};
 use gibbon::play::Playing as GibbonPlaying;
 use snake::play::Playing as SnakePlaying;
 
-/// The games that can be selected and played. Confirming a game creates its
-/// instance right here (see `Scene::input`), so only the chosen game's palette
-/// and sprites are in memory at a time.
+/// The games and tools that can be selected and played. Confirming a game
+/// creates its instance right here (see `Scene::input`), so only the chosen
+/// game's palette and sprites are in memory at a time.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum GameKind {
     Snake,
     Gibbon,
+    /// The key-tester debug tool, not a game: it launches straight into its
+    /// scene and skips the player-count menu.
+    Keys,
 }
 
 impl GameKind {
-    /// All games, in menu order.
-    const ALL: [GameKind; 2] = [GameKind::Snake, GameKind::Gibbon];
+    /// All entries, in menu order.
+    const ALL: [GameKind; 3] = [GameKind::Snake, GameKind::Gibbon, GameKind::Keys];
 
     /// Short display name, used on the game selection and player-count
     /// screens.
@@ -27,6 +30,7 @@ impl GameKind {
         match self {
             GameKind::Snake => "SNAKE",
             GameKind::Gibbon => "GIBBON",
+            GameKind::Keys => "KEYS",
         }
     }
 }
@@ -43,7 +47,7 @@ const DIM_COLOR: Color = Color::rgb(128, 128, 128);
 
 /// The game-selection screen, shown before the player count. Direction keys
 /// cycle the selection, Confirm (Enter/OK) opens the player-count menu for the
-/// chosen game, Back quits.
+/// chosen game (or starts the key tester directly), Back quits.
 pub struct GameSelect {
     selection: usize,
 }
@@ -67,23 +71,25 @@ impl Scene for GameSelect {
         }
         match input {
             Input::Up | Input::Down | Input::Left | Input::Right => {
-                self.selection = 1 - self.selection;
+                self.selection = (self.selection + 1) % GameKind::ALL.len();
                 SceneAction::Continue
             }
-            Input::Confirm | Input::GameA | Input::GameB => {
+            Input::Confirm | Input::GameA | Input::GameB => match GameKind::ALL[self.selection] {
+                // The key tester is a debug tool, not a game: no player-count
+                // menu, it starts straight into its scene.
+                GameKind::Keys => SceneAction::Push(Box::new(keys::Keys::new())),
                 // Create the selected game instance now: the palette and the
                 // decoded sprites stay alive while the player-count menu and
                 // the game run, and are dropped on exit.
-                let game = match GameKind::ALL[self.selection] {
-                    GameKind::Snake => {
-                        crate::menu::PendingGame::Snake(Box::new(SnakePlaying::new()))
-                    }
-                    GameKind::Gibbon => {
-                        crate::menu::PendingGame::Gibbon(Box::new(GibbonPlaying::new()))
-                    }
-                };
-                SceneAction::Push(Box::new(crate::menu::Menu::new(game)))
-            }
+                GameKind::Snake => {
+                    let game = crate::menu::PendingGame::Snake(Box::new(SnakePlaying::new()));
+                    SceneAction::Push(Box::new(crate::menu::Menu::new(game)))
+                }
+                GameKind::Gibbon => {
+                    let game = crate::menu::PendingGame::Gibbon(Box::new(GibbonPlaying::new()));
+                    SceneAction::Push(Box::new(crate::menu::Menu::new(game)))
+                }
+            },
             Input::Back => SceneAction::Quit,
             Input::Pause | Input::GameX | Input::GameY => SceneAction::Continue,
         }

@@ -111,6 +111,7 @@ pub(crate) fn android_keycode_to_input(keycode: i32) -> Option<Input> {
         23 => Some(Input::Confirm), // KEYCODE_DPAD_CENTER (OK; gamepad A often sends this)
         4 => Some(Input::Back),     // KEYCODE_BACK
         111 => Some(Input::Back),   // KEYCODE_ESCAPE
+        109 => Some(Input::Back),   // KEYCODE_BUTTON_SELECT (gamepad select)
         82 => Some(Input::Pause),   // KEYCODE_MENU
         62 => Some(Input::Pause),   // KEYCODE_SPACE
         96 => Some(Input::GameA),   // KEYCODE_BUTTON_A
@@ -332,6 +333,15 @@ mod tests {
         // Releasing W clears the input.
         assert!(state.key_edge(0, 101, Input::Up, false));
         assert!(!state.held(0, Input::Up));
+    }
+
+    /// The gamepad Select button behaves like Back, so a game can exit back
+    /// into the game-selection screen (every game scene returns
+    /// `SceneAction::PopToRoot` on `Input::Back`).
+    #[cfg(target_os = "android")]
+    #[test]
+    fn gamepad_select_maps_to_back() {
+        assert_eq!(android_keycode_to_input(109), Some(Input::Back));
     }
 
     #[test]

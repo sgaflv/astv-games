@@ -14,5 +14,6 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 engine = { path = "../engine" }
 gibbon = { path = "../gibbon" }
+keys = { path = "../keys" }
 miniquad = { version = "0.4", features = ["log-impl"] }
 snake = { path = "../snake" }

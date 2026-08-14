@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["engine", "snake", "gibbon", "app"]
+members = ["engine", "snake", "gibbon", "keys", "app"]
 default-members = ["app"]
 
 [profile.dev]
