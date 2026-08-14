@@ -37,6 +37,12 @@ pub const PLAYER_DARK: Color = Color::rgb(196, 116, 28);
 pub const PLAYER_FACE: Color = Color::rgb(255, 224, 172);
 /// The player's eye.
 pub const PLAYER_EYE: Color = Color::rgb(20, 16, 28);
+/// The second player gibbon's body (green).
+pub const PLAYER2_BODY: Color = Color::rgb(92, 188, 76);
+/// The second player's body shading.
+pub const PLAYER2_DARK: Color = Color::rgb(36, 118, 40);
+/// The second player's face.
+pub const PLAYER2_FACE: Color = Color::rgb(176, 228, 132);
 /// The guard's body.
 pub const GUARD_BODY: Color = Color::rgb(210, 96, 128);
 /// The guard's body shading.
@@ -70,6 +76,9 @@ pub fn palette() -> Palette {
         PLAYER_DARK,
         PLAYER_FACE,
         PLAYER_EYE,
+        PLAYER2_BODY,
+        PLAYER2_DARK,
+        PLAYER2_FACE,
         GUARD_BODY,
         GUARD_DARK,
         GUARD_FACE,

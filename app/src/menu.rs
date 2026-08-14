@@ -41,11 +41,11 @@ impl PendingGame {
     }
 
     /// How many players this game supports; the player-count screen shows one
-    /// option per supported player count.
+    /// option per supported player count. Both games support 1 or 2 players.
     fn players(&self) -> usize {
         match self {
             PendingGame::Snake(_) => 2,
-            PendingGame::Gibbon(_) => 1,
+            PendingGame::Gibbon(_) => 2,
         }
     }
 

@@ -1,6 +1,6 @@
-//! Asset generator for the gibbon game: writes `assets/gibbon.png` and
-//! `assets/guard.png`, 24x24 pixel-art sprite sheets with five frames laid out
-//! horizontally:
+//! Asset generator for the gibbon game: writes `assets/gibbon.png`,
+//! `assets/gibbon2.png` and `assets/guard.png`, 24x24 pixel-art sprite sheets
+//! with five frames laid out horizontally:
 //!
 //! `[right0, right1, left0, left1, climb]`
 //!
@@ -87,6 +87,14 @@ const GIBBON: Palette = Palette {
     body: Rgb(255, 168, 60),
     dark: Rgb(196, 116, 28),
     face: Rgb(255, 224, 172),
+    eye: Rgb(20, 16, 28),
+};
+
+/// The green recolor of the player gibbon, used by player two.
+const GIBBON2: Palette = Palette {
+    body: Rgb(92, 188, 76),
+    dark: Rgb(36, 118, 40),
+    face: Rgb(176, 228, 132),
     eye: Rgb(20, 16, 28),
 };
 
@@ -229,5 +237,6 @@ fn main() {
     let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let assets = manifest.join("assets");
     write_sheet(&assets.join("gibbon.png"), &GIBBON);
+    write_sheet(&assets.join("gibbon2.png"), &GIBBON2);
     write_sheet(&assets.join("guard.png"), &GUARD);
 }

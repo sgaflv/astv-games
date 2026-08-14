@@ -7,8 +7,8 @@
 pub use crate::level::{GRID_X, GRID_Y, Level, Tile};
 pub use crate::palette::{
     BG, BRICK, BRICK_DARK, GUARD_BODY, GUARD_DARK, GUARD_EYE, GUARD_FACE, HOLE, HOLE_EDGE, HUD,
-    LADDER, LADDER_DARK, PLAYER_BODY, PLAYER_DARK, PLAYER_EYE, PLAYER_FACE, WOOD, WOOD_DARK,
-    WOOD_TOP,
+    LADDER, LADDER_DARK, PLAYER_BODY, PLAYER_DARK, PLAYER_EYE, PLAYER_FACE, PLAYER2_BODY,
+    PLAYER2_DARK, PLAYER2_FACE, WOOD, WOOD_DARK, WOOD_TOP,
 };
 use engine::render::Renderer;
 use engine::sprites::RleSprite;
@@ -54,11 +54,13 @@ pub const HUD_H: i32 = 3;
 pub const BOARD_X: i32 = 0;
 pub const BOARD_Y: i32 = HUD_H;
 
-/// Sprite frame count of the character sheets: [right0, right1, left0, left1,
-/// climb].
-pub const CHARACTER_FRAMES: usize = 5;
-/// Sprite frame index of the climb pose.
-pub const CLIMB_FRAME: usize = 4;
+/// Sprite frame count of the walking sheets (gibbon_move_right.png,
+/// guard_move_right.png): the walking animation facing right. The left-facing
+/// frames are the same sprites flipped horizontally at load time.
+pub const WALK_FRAMES: usize = 6;
+/// Sprite frame count of the standing sheets (gibbon.png, guard.png): a
+/// single standing pose.
+pub const STAND_FRAMES: usize = 1;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Action {
@@ -120,6 +122,14 @@ impl Actor {
     }
 }
 
+/// A gibbon picked as a chase target, together with its player index so a
+/// guard that reaches it can mark exactly that gibbon as caught.
+#[derive(Clone, Copy)]
+struct Target {
+    actor: Actor,
+    player: usize,
+}
+
 /// Phase of a dug wooden tile.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum HolePhase {
@@ -158,16 +168,75 @@ pub enum State {
     Win,
 }
 
+/// The animated frames of one character, borrowed from the owning
+/// [`CharacterSheets`]. The left-facing frames are the right-facing art
+/// flipped horizontally, so a single walking sheet covers both directions.
+pub struct CharacterSprites<'a> {
+    /// Standing pose, facing right.
+    pub stand: &'a RleSprite,
+    /// Standing pose, facing left.
+    pub stand_left: &'a RleSprite,
+    /// Walking animation frames, facing right.
+    pub walk_right: &'a [RleSprite],
+    /// Walking animation frames, facing left.
+    pub walk_left: &'a [RleSprite],
+    /// Climbing pose; falls back to the standing pose when absent (the gibbon
+    /// sheets hold no climbing art).
+    pub climb: Option<&'a RleSprite>,
+}
+
+/// The decoded sheets behind one character's animation. The gibbon's standing
+/// pose comes from gibbon.png and the walking animation from
+/// gibbon_move_right.png (flipped for the left-facing frames); the guard
+/// still uses the old combined 5-frame sheet, split into the same poses here.
+pub struct CharacterSheets {
+    /// Standing pose, facing right.
+    pub stand: Vec<RleSprite>,
+    /// Standing pose, facing left.
+    pub stand_left: Vec<RleSprite>,
+    /// Walking animation frames, facing right.
+    pub walk_right: Vec<RleSprite>,
+    /// Walking animation frames, facing left.
+    pub walk_left: Vec<RleSprite>,
+    /// Climbing pose (empty for the gibbon sheets, so climbing falls back to
+    /// the standing pose).
+    pub climb: Vec<RleSprite>,
+}
+
+impl CharacterSheets {
+    /// Borrow the sheets as a [`CharacterSprites`] view for drawing.
+    pub fn sprites(&self) -> CharacterSprites<'_> {
+        CharacterSprites {
+            stand: self
+                .stand
+                .first()
+                .expect("a standing frame is always loaded"),
+            stand_left: self
+                .stand_left
+                .first()
+                .expect("a standing frame is always loaded"),
+            walk_right: &self.walk_right,
+            walk_left: &self.walk_left,
+            climb: self.climb.first(),
+        }
+    }
+}
+
 /// Sprite sheets handed to [`Game::draw`], decoded by the playing scene.
 pub struct GameSprites<'a> {
     pub fruit: &'a [RleSprite],
-    pub gibbon: &'a [RleSprite],
-    pub guard: &'a [RleSprite],
+    pub gibbon: CharacterSprites<'a>,
+    /// The second player's gibbon (green).
+    pub gibbon2: CharacterSprites<'a>,
+    pub guard: CharacterSprites<'a>,
     /// Wood wall sheet: frame 0 is the intact wall, the last frame the
     /// completely destroyed wood left behind in the dug cell.
     pub wood: &'a [RleSprite],
     /// Ladder sheet: a single frame drawn for every ladder rung.
     pub ladder: &'a [RleSprite],
+    /// Stone wall sheet: a single frame drawn for every unbreakable brick
+    /// tile.
+    pub stone: &'a [RleSprite],
 }
 
 /// The game owns the level, the gibbon, the guards, the dug holes and the
@@ -177,13 +246,25 @@ pub struct Game {
     levels: Vec<Level>,
 
     pub level: Level,
+    /// Player one's gibbon. When caught it stops moving and is not drawn
+    /// until the level is cleared or both gibbons are caught and a life is
+    /// lost.
     pub gibbon: Actor,
+    /// Player two's gibbon, with its own latched command.
+    pub gibbon2: Actor,
+    /// Whether each gibbon was caught by a guard this life. A single catch is
+    /// not fatal: the remaining gibbon can still clear the level and both
+    /// come back on the next level. A life is only lost when both are caught.
+    pub caught: [bool; 2],
     pub guards: Vec<Actor>,
 
-    /// The current command. Movement latches: the gibbon keeps going in that
-    /// direction until the way is blocked (a failed move clears it), so the
-    /// key need not be held. A dig command fires once and resolves to `None`.
+    /// The current command for player one. Movement latches: the gibbon
+    /// keeps going in that direction until the way is blocked (a failed move
+    /// clears it), so the key need not be held. A dig command fires once and
+    /// resolves to `None`.
     pub action: Option<Action>,
+    /// The current command for player two.
+    pub action2: Option<Action>,
 
     holes: Vec<Hole>,
 
@@ -195,6 +276,11 @@ pub struct Game {
     pub game_state: State,
 
     state_timer: usize,
+
+    /// How many players are playing (1 or 2). With one player only player
+    /// one's gibbon exists: the second gibbon does not move, collect fruit or
+    /// get drawn, and being caught costs a life directly.
+    pub players: usize,
 
     pub lives: i32,
     pub level_index: usize,
@@ -216,27 +302,35 @@ const FALLBACK: &str = "|..@...........@....\n\
 
 impl Game {
     /// Load every embedded level and start the first one.
-    pub fn new() -> Game {
+    /// Start the embedded levels with the given number of players (1 or 2).
+    pub fn new(players: usize) -> Game {
         let mut levels = crate::level::load_all();
         if levels.is_empty() {
             levels.push(crate::level::parse(FALLBACK).expect("fallback level parses"));
         }
-        Game::from_levels(levels)
+        let mut game = Game::from_levels(levels);
+        game.players = players.clamp(1, 2);
+        game
     }
 
-    /// Build a game from an explicit level list (used by tests).
+    /// Build a game from an explicit level list (used by tests); defaults to
+    /// two players.
     pub fn from_levels(levels: Vec<Level>) -> Game {
         let mut game = Game {
             levels,
             level: Level::default(),
             gibbon: Actor::at(0, 0),
+            gibbon2: Actor::at(0, 0),
+            caught: [false; 2],
             guards: Vec::new(),
             action: None,
+            action2: None,
             holes: Vec::new(),
             frame_cnt: 0,
             tick: 0,
             game_state: State::Playing,
             state_timer: 0,
+            players: 2,
             lives: LIVES,
             level_index: 0,
             fruits_left: 0,
@@ -257,6 +351,8 @@ impl Game {
         self.level_index = index;
         self.level = self.levels[index].clone();
         self.gibbon = Actor::at(self.level.spawn.0 as i32, self.level.spawn.1 as i32);
+        self.gibbon2 = Actor::at(self.level.spawn.0 as i32, self.level.spawn.1 as i32);
+        self.caught = [false; 2];
         let mut guards: Vec<Actor> = self
             .level
             .guard_spawns
@@ -271,6 +367,7 @@ impl Game {
         self.guards = guards;
         self.holes.clear();
         self.action = None;
+        self.action2 = None;
         self.tick = 0;
         self.fruits_left = self.level.fruits;
         self.game_state = State::Playing;
@@ -291,6 +388,11 @@ impl Game {
     /// clears it again), so releasing the key does not stop it.
     pub fn set_action(&mut self, action: Option<Action>) {
         self.action = action;
+    }
+
+    /// Set player two's held direction, mirroring [`Game::set_action`].
+    pub fn set_action2(&mut self, action: Option<Action>) {
+        self.action2 = action;
     }
 
     /// Perform a queued dig from `actor`'s cell, returning whether a hole was
@@ -348,13 +450,18 @@ impl Game {
         }
 
         for &(_, x, y) in &regrown {
-            if self.gibbon.x == x && self.gibbon.y == y {
+            // A gibbon standing on the cell when the wood closes back in is
+            // crushed: this is an instant death, unlike a guard catch, so it
+            // always costs a life.
+            if self.game_state == State::Playing
+                && ((self.gibbon.x == x && self.gibbon.y == y)
+                    || (self.players == 2 && self.gibbon2.x == x && self.gibbon2.y == y))
+            {
                 self.lose_life();
             }
             for i in 0..self.guards.len() {
                 if self.guards[i].x == x && self.guards[i].y == y {
-                    let (sx, sy) =
-                        self.level.guard_spawns[i % self.level.guard_spawns.len()];
+                    let (sx, sy) = self.level.guard_spawns[i % self.level.guard_spawns.len()];
                     self.guards[i] = Actor::at(sx as i32, sy as i32);
                 }
             }
@@ -396,18 +503,26 @@ impl Game {
             // Frozen between rounds: snap the actors to their cells so they
             // do not keep interpolating from their last move.
             self.gibbon.settle();
+            if self.players == 2 {
+                self.gibbon2.settle();
+            }
             for guard in &mut self.guards {
                 guard.settle();
             }
         }
     }
 
-    fn tick_playing(&mut self) {
-        let mut gibbon = self.gibbon;
-
+    /// Advance one gibbon for its latched command, returning it together with
+    /// the command it latches for the next tick. The movement rules apply to
+    /// both gibbons identically.
+    fn step_gibbon(
+        &mut self,
+        mut gibbon: Actor,
+        mut action: Option<Action>,
+    ) -> (Actor, Option<Action>) {
         gibbon.settle();
 
-        match self.action {
+        match action {
             // A dig command fires from the current cell even while airborne
             // (stepping off a tile lets you dig it). Only a successful dig
             // spends the whole tick and holds the fall back; with nothing to
@@ -417,19 +532,19 @@ impl Game {
                 if !self.perform_dig(-1, gibbon) {
                     self.step_gravity(&mut gibbon);
                 }
-                self.action = None;
+                action = None;
             }
             Some(Action::DigRight) => {
                 if !self.perform_dig(1, gibbon) {
                     self.step_gravity(&mut gibbon);
                 }
-                self.action = None;
+                action = None;
             }
-            Some(action) => {
+            Some(cmd) => {
                 let falling = self.step_gravity(&mut gibbon);
 
                 if !falling {
-                    let target = self.target_of(gibbon, action);
+                    let target = self.target_of(gibbon, cmd);
 
                     if self.can_enter(
                         Cell {
@@ -437,21 +552,20 @@ impl Game {
                             y: gibbon.y,
                         },
                         target,
-                        action,
+                        cmd,
                     ) {
-                        gibbon.move_to(target.x, target.y, action);
+                        gibbon.move_to(target.x, target.y, cmd);
                         // Stepping down off a ladder onto a railing hangs the
                         // gibbon: it stops there instead of climbing straight
                         // past it.
-                        if action == Action::Down && self.tile(target.x, target.y) == Tile::Railing
-                        {
-                            self.action = None;
+                        if cmd == Action::Down && self.tile(target.x, target.y) == Tile::Railing {
+                            action = None;
                         }
                     } else {
                         // The held direction can't be followed (a wall ahead,
                         // no ladder above/below): the gibbon stops and the
                         // player must press a direction again.
-                        self.action = None;
+                        action = None;
                     }
                 }
             }
@@ -460,12 +574,29 @@ impl Game {
             }
         }
 
-        self.gibbon = gibbon;
+        (gibbon, action)
+    }
+
+    fn tick_playing(&mut self) {
+        // Each player moves their gibbon; a caught gibbon is out for this
+        // life and neither moves nor collects fruit.
+        if !self.caught[0] {
+            let (gibbon, action) = self.step_gibbon(self.gibbon, self.action);
+            self.gibbon = gibbon;
+            self.action = action;
+        }
+        if self.players == 2 && !self.caught[1] {
+            let (gibbon, action) = self.step_gibbon(self.gibbon2, self.action2);
+            self.gibbon2 = gibbon;
+            self.action2 = action;
+        }
+
         self.collect_fruit();
 
         // Guards chase every sim tick, at the same constant speed as the
         // gibbon (one cell per SIM_FRAMES frames), so a guard never closes the
-        // gap on a gibbon running away from it. Guard 0 minimises the vertical
+        // gap on a gibbon running away from it. Each guard heads for the
+        // closest gibbon that is still free; guard 0 minimises the vertical
         // distance, guard 1 the horizontal distance.
         for i in 0..self.guards.len() {
             let mut guard = self.guards[i];
@@ -473,20 +604,39 @@ impl Game {
 
             let falling = self.step_gravity(&mut guard);
 
-            if !falling && let Some(dir) = self.guard_action(guard, i % 2 == 0) {
-                let target = self.target_of(guard, dir);
-                guard.move_to(target.x, target.y, dir);
+            if !falling
+                && let Some(target) = self.closest_gibbon(guard)
+                && let Some(dir) = self.guard_action(guard, i % 2 == 0, target.actor)
+            {
+                let target_cell = self.target_of(guard, dir);
+                guard.move_to(target_cell.x, target_cell.y, dir);
+                // A guard reaching its target's cell catches that gibbon.
+                if guard.x == target.actor.x && guard.y == target.actor.y {
+                    self.caught[target.player] = true;
+                }
             }
 
             self.guards[i] = guard;
         }
 
-        // A guard that reaches the gibbon catches it.
-        if self
-            .guards
-            .iter()
-            .any(|g| g.x == self.gibbon.x && g.y == self.gibbon.y)
-        {
+        // A guard that lands on a gibbon (e.g. one dropping from a ladder)
+        // catches it. With two players a life is only lost when both gibbons
+        // are caught; with one player the single gibbon costs a life on its
+        // own.
+        for p in 0..2 {
+            if !self.gibbon_active(p) || self.caught[p] {
+                continue;
+            }
+            let gibbon = self.gibbon_of(p);
+            if self
+                .guards
+                .iter()
+                .any(|g| g.x == gibbon.x && g.y == gibbon.y)
+            {
+                self.caught[p] = true;
+            }
+        }
+        if self.caught[0] && (self.players == 1 || self.caught[1]) {
             self.lose_life();
         }
     }
@@ -511,16 +661,28 @@ impl Game {
         self.lives = self.lives.max(1);
     }
 
+    /// Whether a gibbon takes part in this game: player one always does, the
+    /// second only in a two-player game.
+    fn gibbon_active(&self, player: usize) -> bool {
+        player == 0 || self.players == 2
+    }
+
     fn collect_fruit(&mut self) {
-        let (x, y) = (self.gibbon.x as usize, self.gibbon.y as usize);
-        if x < GRID_X && y < GRID_Y && self.level.tile(x, y) == Tile::Fruit {
-            self.level.set_tile(x, y, Tile::Empty);
-            self.fruits_left = self.fruits_left.saturating_sub(1);
-            // A level clears only once every fruit is actually taken, so
-            // fruitless test levels never auto-complete.
-            if self.fruits_left == 0 {
-                self.game_state = State::Cleared;
-                self.state_timer = CLEAR_TICKS;
+        for p in 0..2 {
+            if !self.gibbon_active(p) || self.caught[p] {
+                continue;
+            }
+            let gibbon = self.gibbon_of(p);
+            let (x, y) = (gibbon.x as usize, gibbon.y as usize);
+            if x < GRID_X && y < GRID_Y && self.level.tile(x, y) == Tile::Fruit {
+                self.level.set_tile(x, y, Tile::Empty);
+                self.fruits_left = self.fruits_left.saturating_sub(1);
+                // A level clears only once every fruit is actually taken, so
+                // fruitless test levels never auto-complete.
+                if self.fruits_left == 0 {
+                    self.game_state = State::Cleared;
+                    self.state_timer = CLEAR_TICKS;
+                }
             }
         }
     }
@@ -632,12 +794,12 @@ impl Game {
         false
     }
 
-    /// Pick the next guard move: minimise the distance to the gibbon along
-    /// the primary axis first, then along the other. Only moves that can
-    /// actually be entered are considered, so a guard below the gibbon with
-    /// no ladder to climb keeps closing the horizontal gap instead of
-    /// freezing (a step up through plain air is not enterable).
-    fn guard_action(&mut self, guard: Actor, primary_vertical: bool) -> Option<Action> {
+    /// Pick the next guard move: minimise the distance to `target` along the
+    /// primary axis first, then along the other. Only moves that can actually
+    /// be entered are considered, so a guard below the gibbon with no ladder
+    /// to climb keeps closing the horizontal gap instead of freezing (a step
+    /// up through plain air is not enterable).
+    fn guard_action(&self, guard: Actor, primary_vertical: bool, target: Actor) -> Option<Action> {
         let pos = Cell {
             x: guard.x,
             y: guard.y,
@@ -650,30 +812,60 @@ impl Game {
 
         if primary_vertical {
             // first minimize vertical
-            if guard.y < self.gibbon.prev_y && can_down {
+            if guard.y < target.prev_y && can_down {
                 Some(Action::Down)
-            } else if guard.y > self.gibbon.prev_y && can_up {
+            } else if guard.y > target.prev_y && can_up {
                 Some(Action::Up)
-            } else if guard.x < self.gibbon.prev_x && can_right {
+            } else if guard.x < target.prev_x && can_right {
                 Some(Action::Right)
-            } else if guard.x > self.gibbon.prev_x && can_left {
+            } else if guard.x > target.prev_x && can_left {
                 Some(Action::Left)
             } else {
                 None
             }
         } else {
-            if guard.x < self.gibbon.prev_x && can_right {
+            if guard.x < target.prev_x && can_right {
                 Some(Action::Right)
-            } else if guard.x > self.gibbon.prev_x && can_left {
+            } else if guard.x > target.prev_x && can_left {
                 Some(Action::Left)
-            } else if guard.y < self.gibbon.prev_y && can_down {
+            } else if guard.y < target.prev_y && can_down {
                 Some(Action::Down)
-            } else if guard.y > self.gibbon.prev_y && can_up {
+            } else if guard.y > target.prev_y && can_up {
                 Some(Action::Up)
             } else {
                 None
             }
         }
+    }
+
+    /// The gibbon for a player index, or the first gibbon for any other index
+    /// (used by the crush and catch checks).
+    fn gibbon_of(&self, player: usize) -> Actor {
+        if player == 0 {
+            self.gibbon
+        } else {
+            self.gibbon2
+        }
+    }
+
+    /// The closest gibbon that is not yet caught, with its player index, so
+    /// both guards can be told which target to chase. `None` when both are
+    /// caught (the game is about to lose a life anyway).
+    fn closest_gibbon(&self, guard: Actor) -> Option<Target> {
+        let targets = [
+            Target {
+                actor: self.gibbon,
+                player: 0,
+            },
+            Target {
+                actor: self.gibbon2,
+                player: 1,
+            },
+        ];
+        targets
+            .into_iter()
+            .filter(|t| self.gibbon_active(t.player) && !self.caught[t.player])
+            .min_by_key(|t| (t.actor.x - guard.x).abs() + (t.actor.y - guard.y).abs())
     }
 
     /// Regrow dug tiles whose timer expired, crushing anyone standing on the
@@ -698,25 +890,39 @@ impl Game {
 
     /// Draw the tiles, the fruits, the guards and the gibbon.
     pub fn draw(&self, r: &mut impl Renderer, frame: usize, sprites: &GameSprites) {
-        self.draw_tiles(r, sprites.wood, sprites.ladder);
+        self.draw_tiles(r, sprites.wood, sprites.ladder, sprites.stone);
         self.draw_fruits(r, sprites.fruit);
 
         for guard in &self.guards {
-            self.draw_actor(r, *guard, frame, sprites.guard);
+            self.draw_actor(r, *guard, frame, &sprites.guard);
         }
 
         if self.game_state != State::Dead {
-            self.draw_actor(r, self.gibbon, frame, sprites.gibbon);
+            if !self.caught[0] {
+                self.draw_actor(r, self.gibbon, frame, &sprites.gibbon);
+            }
+            if self.players == 2 && !self.caught[1] {
+                self.draw_actor(r, self.gibbon2, frame, &sprites.gibbon2);
+            }
         }
     }
 
-    fn draw_tiles(&self, r: &mut impl Renderer, wood: &[RleSprite], ladder: &[RleSprite]) {
+    fn draw_tiles(
+        &self,
+        r: &mut impl Renderer,
+        wood: &[RleSprite],
+        ladder: &[RleSprite],
+        stone: &[RleSprite],
+    ) {
         for y in 0..GRID_Y {
             for x in 0..GRID_X {
                 let (px, py) = cell_screen(x as i32, y as i32);
                 match self.level.tile(x, y) {
                     Tile::Wood => draw_wood_frame(r, wood, px, py, 0),
-                    Tile::Brick => draw_brick(r, px, py),
+                    Tile::Brick => match stone.first() {
+                        Some(frame) => frame.draw(r, px, py),
+                        None => draw_brick(r, px, py),
+                    },
                     Tile::Ladder => match ladder.first() {
                         Some(frame) => frame.draw(r, px, py),
                         None => draw_ladder(r, px, py),
@@ -771,36 +977,72 @@ impl Game {
         }
     }
 
-    fn draw_actor(&self, r: &mut impl Renderer, actor: Actor, frame: usize, sheet: &[RleSprite]) {
-        if sheet.is_empty() {
-            return;
-        }
-
+    fn draw_actor(
+        &self,
+        r: &mut impl Renderer,
+        actor: Actor,
+        frame: usize,
+        sprites: &CharacterSprites,
+    ) {
         let (px, py) = interpolate(actor, frame);
-
-        let vertical = actor.prev_y != actor.y;
-
-        let index = if vertical {
-            CLIMB_FRAME
-        } else {
-            if actor.facing < 0 { 2 } else { 0 }
-        };
-
-        if index < sheet.len() {
-            sheet[index].draw(r, px, py);
-            // Wrapping from the bottom row to the top: while the first copy
-            // slides out past the bottom edge, draw it again at the top of
-            // the board, shifted by one board height.
-            if actor.prev_y == GRID_Y as i32 - 1 && actor.y == 0 {
-                sheet[index].draw(r, px, py - BOARD_PY);
-            }
+        let sprite = actor_sprite(actor, frame, sprites);
+        sprite.draw(r, px, py);
+        // Wrapping from the bottom row to the top: while the first copy
+        // slides out past the bottom edge, draw it again at the top of
+        // the board, shifted by one board height.
+        if actor.prev_y == GRID_Y as i32 - 1 && actor.y == 0 {
+            sprite.draw(r, px, py - BOARD_PY);
         }
     }
 }
 
+/// The sprite to draw for `actor` at interpolation frame `frame`: the
+/// climbing pose during vertical movement, a walking-animation frame while
+/// walking horizontally, and the standing pose when resting.
+fn actor_sprite<'a>(
+    actor: Actor,
+    frame: usize,
+    sprites: &'a CharacterSprites<'a>,
+) -> &'a RleSprite {
+    if actor.prev_y != actor.y {
+        sprites
+            .climb
+            .unwrap_or_else(|| facing_stand(actor, sprites))
+    } else if actor.prev_x != actor.x {
+        let frames = if actor.facing < 0 {
+            sprites.walk_left
+        } else {
+            sprites.walk_right
+        };
+        if frames.is_empty() {
+            facing_stand(actor, sprites)
+        } else {
+            &frames[walk_frame(frame, frames.len())]
+        }
+    } else {
+        facing_stand(actor, sprites)
+    }
+}
+
+/// The standing pose for the actor's facing direction.
+fn facing_stand<'a>(actor: Actor, sprites: &'a CharacterSprites<'a>) -> &'a RleSprite {
+    if actor.facing < 0 {
+        sprites.stand_left
+    } else {
+        sprites.stand
+    }
+}
+
+/// Walking-animation frame index for interpolation frame `frame`: the
+/// animation cycles once per cell crossed, spreading its frames evenly across
+/// the SIM_FRAMES-frame move.
+fn walk_frame(frame: usize, count: usize) -> usize {
+    frame * count / SIM_FRAMES
+}
+
 impl Default for Game {
     fn default() -> Game {
-        Game::new()
+        Game::new(2)
     }
 }
 
@@ -818,10 +1060,7 @@ fn interpolate(actor: Actor, frame: usize) -> (i32, i32) {
     // past the bottom edge instead of snapping back to the top, and let the
     // renderer draw a second copy entering at the top.
     if actor.prev_y == GRID_Y as i32 - 1 && actor.y == 0 {
-        return (
-            interp(px, cx, frame),
-            interp(py, BOARD_Y + BOARD_PY, frame),
-        );
+        return (interp(px, cx, frame), interp(py, BOARD_Y + BOARD_PY, frame));
     }
 
     (interp(px, cx, frame), interp(py, cy, frame))
@@ -918,7 +1157,7 @@ fn draw_digging(r: &mut impl Renderer, x: i32, y: i32, k: i32) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use engine::color::Palette;
+    use engine::color::{Color, Palette};
     use engine::render::Framebuffer;
     use engine::sprites::SpriteSheet;
 
@@ -1441,8 +1680,12 @@ mod tests {
              ====================",
         )]);
         game.gibbon = Actor::at(0, 5);
+        game.gibbon2 = Actor::at(0, 5);
         game.guards = vec![Actor::at(0, 3)]; // bottom rung, open air below
-        assert_eq!(game.guard_action(game.guards[0], true), Some(Action::Down));
+        assert_eq!(
+            game.guard_action(game.guards[0], true, game.gibbon),
+            Some(Action::Down)
+        );
         advance(&mut game, 1);
         assert_eq!((game.guards[0].x, game.guards[0].y), (0, 4));
     }
@@ -1624,6 +1867,89 @@ mod tests {
             .expect("ladder sheet encodes")
     }
 
+    /// Decode the embedded stone wall sheet as the game would.
+    fn stone_sheet() -> Vec<RleSprite> {
+        let data = crate::assets::load("stone.png").expect("stone sheet embedded");
+        let mut palette = Palette::default();
+        SpriteSheet::from_png(data, &mut palette, CELL as usize, CELL as usize, 1)
+            .expect("stone sheet decodes")
+            .to_rle()
+            .expect("stone sheet encodes")
+    }
+
+    /// Decode one embedded sheet against the given palette, so its pixels
+    /// land on the exact palette indices; `flipped` mirrors every frame
+    /// horizontally first.
+    fn decode_sheet(
+        name: &str,
+        palette: &mut Palette,
+        frames: usize,
+        flipped: bool,
+    ) -> SpriteSheet {
+        let data = crate::assets::load(name).expect("sprite sheet embedded");
+        let sheet = SpriteSheet::from_png(data, palette, CELL as usize, CELL as usize, frames)
+            .expect("sprite sheet decodes");
+        if flipped {
+            sheet.flipped_horizontal()
+        } else {
+            sheet
+        }
+    }
+
+    /// Build a character's sheets like the game does: the standing pose from
+    /// `stand_name` (with `stand_frames` frames) and the walking animation
+    /// from `walk_name`, flipped for the left-facing frames. When `recolor`
+    /// is set, every pixel is run through it first (player two's green tint).
+    fn character_sheets(
+        palette: &mut Palette,
+        stand_name: &str,
+        stand_frames: usize,
+        walk_name: &str,
+        recolor: Option<fn(Color) -> Color>,
+    ) -> CharacterSheets {
+        let mut decode = |name: &str, frames: usize, flip: bool| -> Vec<RleSprite> {
+            let sheet = decode_sheet(name, palette, frames, flip);
+            match recolor {
+                Some(mapping) => sheet
+                    .recolored(palette, mapping)
+                    .to_rle()
+                    .expect("sprite sheet encodes"),
+                None => sheet.to_rle().expect("sprite sheet encodes"),
+            }
+        };
+        CharacterSheets {
+            stand: decode(stand_name, stand_frames, false),
+            stand_left: decode(stand_name, stand_frames, true),
+            walk_right: decode(walk_name, WALK_FRAMES, false),
+            walk_left: decode(walk_name, WALK_FRAMES, true),
+            climb: Vec::new(),
+        }
+    }
+
+    /// The gibbon's sheets from the real embedded art.
+    fn gibbon_sheets() -> CharacterSheets {
+        let mut palette = crate::palette::palette();
+        character_sheets(
+            &mut palette,
+            "gibbon.png",
+            STAND_FRAMES,
+            "gibbon_move_right.png",
+            None,
+        )
+    }
+
+    /// The same art recolored green, as player two loads it.
+    fn gibbon2_sheets() -> CharacterSheets {
+        let mut palette = crate::palette::palette();
+        character_sheets(
+            &mut palette,
+            "gibbon.png",
+            STAND_FRAMES,
+            "gibbon_move_right.png",
+            Some(crate::play::player2_color),
+        )
+    }
+
     fn draw_game(game: &Game, wood: &[RleSprite], ladder: &[RleSprite]) -> Framebuffer {
         let mut fb = Framebuffer::new();
         game.draw(
@@ -1631,10 +1957,12 @@ mod tests {
             0,
             &GameSprites {
                 fruit: &[],
-                gibbon: &[],
-                guard: &[],
+                gibbon: gibbon_sheets().sprites(),
+                gibbon2: gibbon_sheets().sprites(),
+                guard: gibbon_sheets().sprites(),
                 wood,
                 ladder,
+                stone: &[],
             },
         );
         fb
@@ -1666,7 +1994,8 @@ mod tests {
         // Once the dig animation finishes, the completely destroyed wood (the
         // sheet's last frame) is still drawn in the place where it was dug,
         // over the open pit.
-        let wood = wood_sheet();        let mut game = game(vec![level(
+        let wood = wood_sheet();
+        let mut game = game(vec![level(
             ".s.................g\n\
              =...................\n\
              ....................",
@@ -1705,6 +2034,78 @@ mod tests {
         let (px, py) = cell_screen(0, 0);
         ladder[0].draw(&mut expected, px, py);
         assert_eq!(cell_pixels(&fb, 0, 0), cell_pixels(&expected, 0, 0));
+    }
+
+    #[test]
+    fn stone_walls_render_from_the_sheet() {
+        // An unbreakable brick tile is drawn from stone.png's single frame
+        // rather than procedurally.
+        let stone = stone_sheet();
+        assert_eq!(stone.len(), 1);
+
+        let mut game = game(vec![level(
+            "*s...................\n\
+             ....................",
+        )]);
+        game.gibbon = Actor::at(19, 11); // off-screen
+        game.guards = vec![];
+        let mut fb = Framebuffer::new();
+        game.draw(
+            &mut fb,
+            0,
+            &GameSprites {
+                fruit: &[],
+                gibbon: gibbon_sheets().sprites(),
+                gibbon2: gibbon_sheets().sprites(),
+                guard: gibbon_sheets().sprites(),
+                wood: &[],
+                ladder: &[],
+                stone: &stone,
+            },
+        );
+
+        let mut expected = Framebuffer::new();
+        let (px, py) = cell_screen(0, 0);
+        stone[0].draw(&mut expected, px, py);
+        assert_eq!(cell_pixels(&fb, 0, 0), cell_pixels(&expected, 0, 0));
+    }
+
+    #[test]
+    fn the_second_player_gibbon_is_green() {
+        // Player two reuses the player gibbon's art recolored green at load
+        // time, so the two gibbons are distinguishable while idle.
+        let orange = gibbon_sheets();
+        let green = gibbon2_sheets();
+        assert_eq!(orange.stand.len(), STAND_FRAMES);
+        assert_eq!(green.stand.len(), STAND_FRAMES);
+
+        let mut game = game(vec![level(
+            "s..................g\n\
+             ....................",
+        )]);
+        game.gibbon = Actor::at(19, 11); // off-screen
+        game.gibbon2 = Actor::at(2, 0);
+        game.guards = vec![];
+        let mut fb = Framebuffer::new();
+        game.draw(
+            &mut fb,
+            0,
+            &GameSprites {
+                fruit: &[],
+                gibbon: orange.sprites(),
+                gibbon2: green.sprites(),
+                guard: gibbon_sheets().sprites(),
+                wood: &[],
+                ladder: &[],
+                stone: &[],
+            },
+        );
+
+        let body = crate::palette::palette().index_of(PLAYER2_BODY);
+        let orange_body = crate::palette::palette().index_of(PLAYER_BODY);
+        let pixels = cell_pixels(&fb, 2, 0);
+        assert!(pixels.contains(&body), "player two is drawn in green");
+        assert!(!pixels.contains(&orange_body), "player two is not orange");
     }
 
     #[test]
@@ -1853,7 +2254,10 @@ mod tests {
         assert_eq!(game.guards.len(), 2);
         assert_eq!(game.guards[0].x, 0);
         assert_eq!(game.guards[1].x, 0);
+        // Both gibbons run right together, so whichever the guard picks it
+        // keeps the same constant gap to the leader.
         game.set_action(Some(Action::Right));
+        game.set_action2(Some(Action::Right));
         for _ in 0..12 {
             let gap_before = game.gibbon.x - game.guards[0].x;
             advance(&mut game, 1);
@@ -1896,8 +2300,12 @@ mod tests {
              ..==................",
         )]);
         game.gibbon = Actor::at(5, 0);
+        game.gibbon2 = Actor::at(5, 0);
         game.guards = vec![Actor::at(0, 2)];
-        assert_eq!(game.guard_action(game.guards[0], true), Some(Action::Right));
+        assert_eq!(
+            game.guard_action(game.guards[0], true, game.gibbon),
+            Some(Action::Right)
+        );
         // Walks right across the wood floor to the edge of it.
         advance(&mut game, 2);
         assert_eq!((game.guards[0].x, game.guards[0].y), (2, 2));
@@ -1930,12 +2338,19 @@ mod tests {
              ====================",
         )]);
         game.gibbon = Actor::at(5, 0);
+        game.gibbon2 = Actor::at(5, 0);
         game.guards = vec![Actor::at(5, 8), Actor::at(10, 8)];
         // Guard 0 (vertical priority): the gibbon is straight up a ladder.
-        assert_eq!(game.guard_action(game.guards[0], true), Some(Action::Up));
+        assert_eq!(
+            game.guard_action(game.guards[0], true, game.gibbon),
+            Some(Action::Up)
+        );
         // Guard 1 (horizontal priority): the gibbon is to its left on a clear
         // row, so it walks left first.
-        assert_eq!(game.guard_action(game.guards[1], false), Some(Action::Left));
+        assert_eq!(
+            game.guard_action(game.guards[1], false, game.gibbon),
+            Some(Action::Left)
+        );
     }
 
     #[test]
@@ -1978,6 +2393,154 @@ mod tests {
         assert_eq!(game.lives, LIVES);
         assert_eq!(game.gibbon.x, 0);
         assert_eq!(game.gibbon.y, 0);
+    }
+
+    #[test]
+    fn player_two_controls_the_second_gibbon() {
+        // Player two's input drives gibbon2 with its own independent latch,
+        // leaving player one's gibbon alone.
+        let mut game = game(vec![level(
+            "s..................g\n\
+             ==..................\n\
+             ....................",
+        )]);
+        game.set_action2(Some(Action::Right));
+        advance(&mut game, 1);
+        assert_eq!((game.gibbon.x, game.gibbon.y), (0, 0));
+        assert_eq!((game.gibbon2.x, game.gibbon2.y), (1, 0));
+        assert_eq!(game.action, None);
+        assert_eq!(game.action2, Some(Action::Right));
+        // The latch keeps gibbon2 walking without the key being held.
+        advance(&mut game, 1);
+        assert_eq!(game.gibbon2.x, 2);
+    }
+
+    #[test]
+    fn guards_chase_the_closer_gibbon() {
+        // A guard between two gibbons heads for the nearer one.
+        let mut game = game(vec![level(
+            "s..................g\n\
+             ====================\n\
+             ....................",
+        )]);
+        game.gibbon = Actor::at(8, 0);
+        game.gibbon2 = Actor::at(1, 0);
+        game.guards = vec![Actor::at(5, 0)];
+        advance(&mut game, 1);
+        // Distance to gibbon1 is 3, to gibbon2 is 4: it walks right.
+        assert_eq!(game.guards[0].x, 6);
+        assert_eq!(game.caught, [false, false]);
+    }
+
+    #[test]
+    fn a_single_catch_continues_without_losing_a_life() {
+        // The guard reaches the nearer gibbon (player two) and catches it,
+        // but the game keeps running: no life is lost and the guard turns to
+        // chase the remaining gibbon.
+        let mut game = game(vec![level(
+            "s..................g\n\
+             ==..................\n\
+             ....................",
+        )]);
+        game.gibbon = Actor::at(5, 0);
+        game.gibbon2 = Actor::at(0, 0);
+        game.guards = vec![Actor::at(1, 0)];
+        advance(&mut game, 1);
+        assert_eq!(game.caught, [false, true]);
+        assert_eq!(game.lives, LIVES);
+        assert_eq!(game.game_state, State::Playing);
+        // The caught gibbon is out for this life and the guard now targets
+        // the free one.
+        advance(&mut game, 1);
+        assert_eq!((game.gibbon2.x, game.gibbon2.y), (0, 0));
+        assert_eq!(game.guards[0].x, 1);
+        assert_eq!(game.game_state, State::Playing);
+    }
+
+    #[test]
+    fn both_gibbons_caught_costs_a_life() {
+        // Both gibbons share the spawn, so a guard that reaches it catches
+        // both at once and a life is lost.
+        let mut game = game(vec![level(
+            "s..................g\n\
+             ==..................\n\
+             ....................",
+        )]);
+        game.guards = vec![Actor::at(1, 0)];
+        advance(&mut game, 1);
+        assert_eq!(game.caught, [true, true]);
+        assert_eq!(game.lives, LIVES - 1);
+        assert_eq!(game.game_state, State::Dead);
+    }
+
+    #[test]
+    fn the_remaining_gibbon_can_still_clear_the_level() {
+        // With player one already caught, player two collects the last fruit:
+        // the level clears and the next level starts with both gibbons free.
+        let a = level(
+            "s@..................g\n\
+             ==..................\n\
+             ....................",
+        );
+        let b = level(
+            "s@..................g\n\
+             ==..................\n\
+             ....................",
+        );
+        let mut game = game(vec![a, b]);
+        game.caught = [true, false];
+        game.set_action2(Some(Action::Right));
+        advance(&mut game, 1);
+        assert_eq!(game.game_state, State::Cleared);
+        assert_eq!(game.lives, LIVES);
+        advance(&mut game, CLEAR_TICKS);
+        assert_eq!(game.level_index, 1);
+        assert_eq!(game.caught, [false, false]);
+        assert_eq!(game.gibbon, Actor::at(0, 0));
+        assert_eq!(game.gibbon2, Actor::at(0, 0));
+        assert_eq!(game.game_state, State::Playing);
+    }
+
+    #[test]
+    fn one_player_mode_ignores_the_second_gibbon() {
+        // With a single player the second gibbon neither moves nor collects
+        // fruit, and the guards chase player one even when the idle gibbon
+        // sits closer to them.
+        let mut game = game(vec![level(
+            "s..@.............g.\n\
+             ====================",
+        )]);
+        game.players = 1;
+        game.gibbon = Actor::at(15, 0);
+        game.gibbon2 = Actor::at(3, 0);
+        game.guards = vec![Actor::at(8, 0)];
+        game.set_action2(Some(Action::Right));
+        advance(&mut game, 1);
+        // The guard heads right toward player one (at 15), not left toward the
+        // idle second gibbon (at 3).
+        assert_eq!(game.guards[0].x, 9);
+        // The idle gibbon stays put despite its latched command, and does not
+        // take the fruit on its cell.
+        assert_eq!(game.gibbon2, Actor::at(3, 0));
+        assert_eq!(game.level.tile(3, 0), Tile::Fruit);
+        assert_eq!(game.fruits_left, 1);
+    }
+
+    #[test]
+    fn one_player_catch_costs_a_life_directly() {
+        // A single gibbon has no partner to share the life with: being caught
+        // loses a life right away, like the classic single-player game.
+        let mut game = game(vec![level(
+            "s..................g\n\
+             ==..................\n\
+             ....................",
+        )]);
+        game.players = 1;
+        game.guards = vec![Actor::at(1, 0)];
+        advance(&mut game, 1);
+        assert_eq!(game.caught[0], true);
+        assert_eq!(game.lives, LIVES - 1);
+        assert_eq!(game.game_state, State::Dead);
     }
 
     #[test]

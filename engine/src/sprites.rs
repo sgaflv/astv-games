@@ -30,8 +30,8 @@ use std::error::Error;
 use std::fmt;
 use std::io::Cursor;
 
-use crate::color::Palette;
 use crate::color::TRANSPARENT;
+use crate::color::{Color, Palette};
 pub use crate::render::RleError;
 use crate::render::{CT_NEXT, CT_OPAQUE, CT_SKIP, MAX_RUN, Renderer, RleDecoder};
 
@@ -120,6 +120,25 @@ impl Sprite {
         &self.indices
     }
 
+    /// A copy of the sprite mirrored horizontally (left/right), so the same
+    /// art can face the other way: a sheet that only holds right-facing
+    /// frames can be flipped to produce the left-facing ones.
+    pub fn flipped_horizontal(&self) -> Sprite {
+        let mut indices = self.indices.clone();
+        for row in 0..self.height {
+            let o = row * self.width;
+            let from = &self.indices[o..o + self.width];
+            for col in 0..self.width {
+                indices[o + col] = from[self.width - 1 - col];
+            }
+        }
+        Sprite {
+            width: self.width,
+            height: self.height,
+            indices,
+        }
+    }
+
     // /// Blit the sprite onto a renderer (e.g. the framebuffer) at `(x, y)`,
     // /// clipped to the screen. Transparent pixels are skipped.
     // pub fn draw(&self, r: &mut impl Renderer, x: i32, y: i32) {
@@ -206,6 +225,48 @@ impl SpriteSheet {
     /// Size of a single frame: `(width, height)`.
     pub fn frame_size(&self) -> (usize, usize) {
         (self.frame_width, self.frame_height)
+    }
+
+    /// A copy of the sheet with every frame mirrored horizontally (see
+    /// [`Sprite::flipped_horizontal`]), so a right-facing animation can be
+    /// reused for the opposite facing direction.
+    pub fn flipped_horizontal(&self) -> SpriteSheet {
+        SpriteSheet {
+            frames: self.frames.iter().map(Sprite::flipped_horizontal).collect(),
+            frame_width: self.frame_width,
+            frame_height: self.frame_height,
+        }
+    }
+
+    /// A copy of the sheet with every opaque pixel recolored through `mapping`:
+    /// each palette color is replaced by the index of `mapping(color)` (exact
+    /// match, added by the game's fixed palette colors) and transparent pixels
+    /// stay transparent. Used to give a second player its own color from
+    /// shared art instead of a separate sheet.
+    pub fn recolored(&self, palette: &Palette, mapping: impl Fn(Color) -> Color) -> SpriteSheet {
+        let frames = self
+            .frames
+            .iter()
+            .map(|frame| {
+                let indices = frame
+                    .indices
+                    .iter()
+                    .map(|&p| {
+                        if p == TRANSPARENT {
+                            p
+                        } else {
+                            palette.index_of(mapping(palette.rgb(p)))
+                        }
+                    })
+                    .collect();
+                Sprite::new(indices, frame.width, frame.height)
+            })
+            .collect();
+        SpriteSheet {
+            frames,
+            frame_width: self.frame_width,
+            frame_height: self.frame_height,
+        }
     }
 
     /// Encode every frame as an [`RleSprite`], so the game can draw them with
@@ -492,6 +553,104 @@ mod tests {
         assert!(SpriteSheet::from_png(&png_bytes, &mut palette, 2, 1, 2).is_err());
         assert!(SpriteSheet::from_png(&png_bytes, &mut palette, 1, 2, 2).is_err());
         assert!(SpriteSheet::from_png(&png_bytes, &mut palette, 1, 1, 0).is_err());
+    }
+
+    #[test]
+    fn flipping_a_sprite_mirrors_each_row() {
+        // A 3x1 sprite with the pixels [A B C] flips to [C B A].
+        let sprite = Sprite::new(vec![1, 2, 3], 3, 1);
+        let flipped = sprite.flipped_horizontal();
+        assert_eq!(flipped.width(), 3);
+        assert_eq!(flipped.height(), 1);
+        assert_eq!(flipped.pixels(), &[3, 2, 1]);
+        // The original is left untouched.
+        assert_eq!(sprite.pixels(), &[1, 2, 3]);
+    }
+
+    #[test]
+    fn flipping_a_sprite_mirrors_every_row_and_keeps_transparency() {
+        // 2x2 sprite:
+        //   A T
+        //   T B
+        // flips to
+        //   T A
+        //   B T
+        let sprite = Sprite::new(vec![1, TRANSPARENT, TRANSPARENT, 2], 2, 2);
+        let flipped = sprite.flipped_horizontal();
+        assert_eq!(flipped.pixels(), &[TRANSPARENT, 1, 2, TRANSPARENT]);
+    }
+
+    #[test]
+    fn flipping_a_sheet_flips_every_frame() {
+        // Synthetic 2-frame strip of 3x1 frames: [red green blue] and
+        // [magenta cyan brown], each mirrored when flipped.
+        let a = [
+            Color::rgb(255, 0, 0),
+            Color::rgb(0, 255, 0),
+            Color::rgb(0, 0, 255),
+        ];
+        let b = [
+            Color::rgb(255, 0, 255),
+            Color::rgb(0, 255, 255),
+            Color::rgb(128, 64, 0),
+        ];
+        let mut rgba = Vec::new();
+        for color in a.iter().chain(b.iter()) {
+            rgba.push([color.r, color.g, color.b, 255]);
+        }
+        let png_bytes = png_from_rgba(&rgba, 6, 1);
+
+        let mut palette = Palette::default();
+        let sheet = SpriteSheet::from_png(&png_bytes, &mut palette, 3, 1, 2).expect("sheet loads");
+        let flipped = sheet.flipped_horizontal();
+        assert_eq!(flipped.len(), 2);
+        assert_eq!(flipped.frame_size(), (3, 1));
+        let expect =
+            |colors: &[Color]| -> Vec<u8> { colors.iter().map(|&c| palette.index_of(c)).collect() };
+        let flipped0 = expect(&[a[2], a[1], a[0]]);
+        let flipped1 = expect(&[b[2], b[1], b[0]]);
+        assert_eq!(flipped.sprite(0).unwrap().pixels(), flipped0.as_slice());
+        assert_eq!(flipped.sprite(1).unwrap().pixels(), flipped1.as_slice());
+        // The original frames are untouched.
+        assert_eq!(sheet.sprite(0).unwrap().pixels(), expect(&a).as_slice());
+        assert_eq!(sheet.sprite(1).unwrap().pixels(), expect(&b).as_slice());
+    }
+
+    #[test]
+    fn recoloring_a_sheet_remaps_opaque_pixels() {
+        // A 1-frame strip of 3x1 pixels [red green blue]; recoloring turns
+        // red into white and leaves the rest unchanged, transparency included.
+        let mut palette = Palette::default();
+        let green = Color::rgb(0, 255, 0);
+        let blue = Color::rgb(0, 0, 255);
+        let red = Color::rgb(255, 0, 0);
+        let white = Color::rgb(255, 255, 255);
+        let rgba = [
+            [red.r, red.g, red.b, 255],
+            [green.r, green.g, green.b, 255],
+            [blue.r, blue.g, blue.b, 255],
+        ];
+        let sheet = SpriteSheet::from_png(&png_from_rgba(&rgba, 3, 1), &mut palette, 3, 1, 1)
+            .expect("sheet loads");
+
+        let recolored = sheet.recolored(&palette, |c| if c == red { white } else { c });
+        assert_eq!(
+            recolored.sprite(0).unwrap().pixels(),
+            &[
+                palette.index_of(white),
+                palette.index_of(green),
+                palette.index_of(blue)
+            ]
+        );
+        // The original frame is untouched.
+        assert_eq!(
+            sheet.sprite(0).unwrap().pixels(),
+            &[
+                palette.index_of(red),
+                palette.index_of(green),
+                palette.index_of(blue)
+            ]
+        );
     }
 
     #[test]
