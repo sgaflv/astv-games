@@ -38,6 +38,9 @@ const CLEAR_TICKS: usize = 10;
 /// Sim ticks spent showing the gibbon was caught before it respawns.
 const DEAD_TICKS: usize = 10;
 
+/// Sim ticks spent showing "GAME OVER" before the whole game restarts.
+const GAME_OVER_TICKS: usize = 10;
+
 /// One board cell in logical pixels.
 pub const CELL: i32 = 24;
 
@@ -160,6 +163,11 @@ pub struct GameSprites<'a> {
     pub fruit: &'a [RleSprite],
     pub gibbon: &'a [RleSprite],
     pub guard: &'a [RleSprite],
+    /// Wood wall sheet: frame 0 is the intact wall, the last frame the
+    /// completely destroyed wood left behind in the dug cell.
+    pub wood: &'a [RleSprite],
+    /// Ladder sheet: a single frame drawn for every ladder rung.
+    pub ladder: &'a [RleSprite],
 }
 
 /// The game owns the level, the gibbon, the guards, the dug holes and the
@@ -195,16 +203,16 @@ pub struct Game {
 
 /// A minimal built-in level, used when no level files are embedded.
 const FALLBACK: &str = "|..@...........@....\n\
-                        |###################\n\
+                        |===================\n\
                         |...................\n\
                         |........|..........\n\
-                        |........|.#########\n\
+                        |........|.=========\n\
                         |........|..........\n\
                         |........|..........\n\
                         |.....|..|..........\n\
                         |.....|..|..........\n\
                         ..s......|....g....g\n\
-                        ####################";
+                        ====================";
 
 impl Game {
     /// Load every embedded level and start the first one.
@@ -249,12 +257,18 @@ impl Game {
         self.level_index = index;
         self.level = self.levels[index].clone();
         self.gibbon = Actor::at(self.level.spawn.0 as i32, self.level.spawn.1 as i32);
-        self.guards = self
+        let mut guards: Vec<Actor> = self
             .level
             .guard_spawns
             .iter()
             .map(|&(x, y)| Actor::at(x as i32, y as i32))
             .collect();
+        // The chase logic assumes two guards; with a single spawn point both
+        // guards start from that cell.
+        if guards.len() == 1 {
+            guards.push(guards[0]);
+        }
+        self.guards = guards;
         self.holes.clear();
         self.action = None;
         self.tick = 0;
@@ -339,7 +353,8 @@ impl Game {
             }
             for i in 0..self.guards.len() {
                 if self.guards[i].x == x && self.guards[i].y == y {
-                    let (sx, sy) = self.level.guard_spawns[i];
+                    let (sx, sy) =
+                        self.level.guard_spawns[i % self.level.guard_spawns.len()];
                     self.guards[i] = Actor::at(sx as i32, sy as i32);
                 }
             }
@@ -368,7 +383,8 @@ impl Game {
                 match self.game_state {
                     State::Cleared => self.next_level(),
                     State::Dead => self.respawn(),
-                    _ => {}
+                    State::GameOver => self.restart(),
+                    State::Playing | State::Win => {}
                 }
                 return;
             }
@@ -476,8 +492,8 @@ impl Game {
     }
 
     /// The gibbon was caught or crushed: lose a life, pausing the action
-    /// until the respawn timer runs out (or ending the run when lives run
-    /// out).
+    /// until the respawn timer runs out (or restarting the whole game when
+    /// lives run out).
     fn lose_life(&mut self) {
         self.lives -= 1;
         if self.lives > 0 {
@@ -485,7 +501,7 @@ impl Game {
             self.state_timer = DEAD_TICKS;
         } else {
             self.game_state = State::GameOver;
-            self.state_timer = 0;
+            self.state_timer = GAME_OVER_TICKS;
         }
     }
 
@@ -555,9 +571,22 @@ impl Game {
         let target_tile = self.tile(target.x, target.y);
         match action {
             Action::Up => {
+                // Climbing up needs a ladder or railing in the current cell.
+                // The cell above decides what is possible: a ladder rung is
+                // always climbable, a railing only when it continues as a
+                // ladder above (climbing up onto the top of a bare railing is
+                // impossible), open air only from the top of a ladder, and a
+                // solid cell (wood or brick) above always blocks the climb.
                 target.y >= 0
-                    && (target_tile == Tile::Ladder
-                        || current == Tile::Ladder && !target_tile.is_solid())
+                    && matches!(current, Tile::Ladder | Tile::Railing)
+                    && !target_tile.is_solid()
+                    && if target_tile == Tile::Ladder {
+                        true
+                    } else if target_tile == Tile::Railing {
+                        self.tile(target.x, target.y - 1) == Tile::Ladder
+                    } else {
+                        current == Tile::Ladder
+                    }
             }
             Action::Down => target.y < GRID_Y as i32 && !target_tile.is_solid(),
             Action::Left | Action::Right => {
@@ -587,8 +616,13 @@ impl Game {
     /// Apply one cell of gravity when the actor is unsupported. Returns
     /// whether the actor moved (fell).
     fn step_gravity(&self, actor: &mut Actor) -> bool {
+        // Falling off the bottom row wraps around to the top of the board.
         if actor.y >= GRID_Y as i32 - 1 {
-            return false; // the bottom row is the floor
+            if !self.supported(actor.prev_x, actor.prev_y) && !self.supported(actor.x, actor.y) {
+                actor.move_to(actor.x, 0, Action::Down);
+                return true;
+            }
+            return false; // resting on the bottom row
         }
 
         if !self.supported(actor.prev_x, actor.prev_y) && !self.supported(actor.x, actor.y) {
@@ -664,7 +698,7 @@ impl Game {
 
     /// Draw the tiles, the fruits, the guards and the gibbon.
     pub fn draw(&self, r: &mut impl Renderer, frame: usize, sprites: &GameSprites) {
-        self.draw_tiles(r);
+        self.draw_tiles(r, sprites.wood, sprites.ladder);
         self.draw_fruits(r, sprites.fruit);
 
         for guard in &self.guards {
@@ -676,32 +710,48 @@ impl Game {
         }
     }
 
-    fn draw_tiles(&self, r: &mut impl Renderer) {
+    fn draw_tiles(&self, r: &mut impl Renderer, wood: &[RleSprite], ladder: &[RleSprite]) {
         for y in 0..GRID_Y {
             for x in 0..GRID_X {
                 let (px, py) = cell_screen(x as i32, y as i32);
                 match self.level.tile(x, y) {
-                    Tile::Wood => draw_wood(r, px, py),
+                    Tile::Wood => draw_wood_frame(r, wood, px, py, 0),
                     Tile::Brick => draw_brick(r, px, py),
-                    Tile::Ladder => draw_ladder(r, px, py),
+                    Tile::Ladder => match ladder.first() {
+                        Some(frame) => frame.draw(r, px, py),
+                        None => draw_ladder(r, px, py),
+                    },
                     Tile::Railing => draw_railing(r, px, py),
                     Tile::Empty | Tile::Fruit => {}
                 }
             }
         }
         for hole in &self.holes {
-            match hole.phase {
-                HolePhase::Digging => {
-                    let (px, py) = cell_screen(hole.x, hole.y);
-                    let k = (SIM_FRAMES - hole.frames) * CELL as usize / SIM_FRAMES;
-                    draw_digging(r, px, py, k as i32);
+            let (px, py) = cell_screen(hole.x, hole.y);
+            let index = match hole.phase {
+                HolePhase::Digging => destroy_frame(hole.frames, wood.len()),
+                HolePhase::Restoring => restore_frame(hole.frames, wood.len()),
+                HolePhase::Regrowing => wood.len().saturating_sub(1),
+            };
+            if wood.is_empty() {
+                // Procedural fallback: the pit opens from the top of the cell
+                // and the remaining wood drops down, then rises back.
+                match hole.phase {
+                    HolePhase::Digging => {
+                        let k = (SIM_FRAMES - hole.frames) * CELL as usize / SIM_FRAMES;
+                        draw_digging(r, px, py, k as i32);
+                    }
+                    HolePhase::Restoring => {
+                        let k = hole.frames * CELL as usize / SIM_FRAMES;
+                        draw_digging(r, px, py, k as i32);
+                    }
+                    HolePhase::Regrowing => draw_hole(r, hole.x, hole.y),
                 }
-                HolePhase::Restoring => {
-                    let (px, py) = cell_screen(hole.x, hole.y);
-                    let k = hole.frames * CELL as usize / SIM_FRAMES;
-                    draw_digging(r, px, py, k as i32);
-                }
-                HolePhase::Regrowing => draw_hole(r, hole.x, hole.y),
+            } else {
+                // The completely destroyed wood stays visible in the place
+                // where it was dug, with the open pit showing beneath it.
+                draw_hole(r, hole.x, hole.y);
+                wood[index].draw(r, px, py);
             }
         }
     }
@@ -738,6 +788,12 @@ impl Game {
 
         if index < sheet.len() {
             sheet[index].draw(r, px, py);
+            // Wrapping from the bottom row to the top: while the first copy
+            // slides out past the bottom edge, draw it again at the top of
+            // the board, shifted by one board height.
+            if actor.prev_y == GRID_Y as i32 - 1 && actor.y == 0 {
+                sheet[index].draw(r, px, py - BOARD_PY);
+            }
         }
     }
 }
@@ -757,6 +813,16 @@ fn interpolate(actor: Actor, frame: usize) -> (i32, i32) {
     }
 
     let (px, py) = cell_screen(actor.prev_x, actor.prev_y);
+
+    // Falling off the bottom row wraps to the top: slide the first copy out
+    // past the bottom edge instead of snapping back to the top, and let the
+    // renderer draw a second copy entering at the top.
+    if actor.prev_y == GRID_Y as i32 - 1 && actor.y == 0 {
+        return (
+            interp(px, cx, frame),
+            interp(py, BOARD_Y + BOARD_PY, frame),
+        );
+    }
 
     (interp(px, cx, frame), interp(py, cy, frame))
 }
@@ -779,6 +845,35 @@ fn draw_wood(r: &mut impl Renderer, x: i32, y: i32) {
     r.fill_rect(x + 3, y + 5, CELL - 6, 1, WOOD_DARK);
     r.fill_rect(x + 5, y + 11, CELL - 10, 1, WOOD_DARK);
     r.fill_rect(x + 4, y + 17, CELL - 8, 1, WOOD_DARK);
+}
+
+/// Draw the wood sprite at `index` of the sheet; with an empty sheet falls
+/// back to the procedural wood tile.
+fn draw_wood_frame(r: &mut impl Renderer, wood: &[RleSprite], x: i32, y: i32, index: usize) {
+    match wood.get(index) {
+        Some(frame) => frame.draw(r, x, y),
+        None => draw_wood(r, x, y),
+    }
+}
+
+/// Wood-sheet index for the dig animation: frame 0 (the intact wall) is shown
+/// first and the last frame (the completely destroyed wood) last, as the
+/// SIM_FRAMES destruction frames elapse.
+fn destroy_frame(frames_left: usize, count: usize) -> usize {
+    if count == 0 {
+        return 0;
+    }
+    let elapsed = SIM_FRAMES.saturating_sub(frames_left).min(SIM_FRAMES);
+    elapsed * (count - 1) / SIM_FRAMES
+}
+
+/// Wood-sheet index for the regrow animation: the destroyed last frame is
+/// shown first and the intact frame 0 last, as the wood grows back.
+fn restore_frame(frames_left: usize, count: usize) -> usize {
+    if count == 0 {
+        return 0;
+    }
+    frames_left.min(SIM_FRAMES) * (count - 1) / SIM_FRAMES
 }
 
 fn draw_brick(r: &mut impl Renderer, x: i32, y: i32) {
@@ -823,6 +918,9 @@ fn draw_digging(r: &mut impl Renderer, x: i32, y: i32, k: i32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use engine::color::Palette;
+    use engine::render::Framebuffer;
+    use engine::sprites::SpriteSheet;
 
     fn level(text: &str) -> Level {
         crate::level::parse(text).expect("test level parses")
@@ -841,15 +939,78 @@ mod tests {
 
     #[test]
     fn gibbon_falls_when_unsupported() {
-        // Whole level empty: the gibbon drops to the bottom row.
+        // Whole level empty: the gibbon drops to the bottom row, then wraps
+        // around to the top and keeps falling.
         let mut game = game(vec![level(
             "s...................g\n\
              ....................",
         )]);
         assert_eq!(game.gibbon.y, 0);
-        advance(&mut game, 20);
+        advance(&mut game, 10);
         assert_eq!(game.gibbon.y, GRID_Y as i32 - 1);
         assert_eq!(game.gibbon.x, 0);
+        // One more tick wraps it around to the top of the board.
+        advance(&mut game, 1);
+        assert_eq!(game.gibbon.y, 0);
+        assert_eq!(game.gibbon.prev_y, GRID_Y as i32 - 1);
+        // And it keeps falling down from the top.
+        advance(&mut game, 1);
+        assert_eq!(game.gibbon.y, 1);
+    }
+
+    #[test]
+    fn falling_off_the_bottom_wraps_to_the_top() {
+        // An open column with no ground: the gibbon drops off the bottom row
+        // and re-enters at the top, one cell per sim tick.
+        let mut game = game(vec![level(
+            ".s..................\n\
+             ....................",
+        )]);
+        assert_eq!(game.gibbon.y, 0);
+        advance(&mut game, GRID_Y as usize - 1);
+        assert_eq!(game.gibbon.y, GRID_Y as i32 - 1);
+        // The wrap tick re-enters at the top, keeping the bottom row as the
+        // previous cell so the renderer can slide it across the seam.
+        advance(&mut game, 1);
+        assert_eq!(game.gibbon.y, 0);
+        assert_eq!(game.gibbon.prev_y, GRID_Y as i32 - 1);
+        assert_eq!(game.gibbon.x, 1);
+    }
+
+    #[test]
+    fn a_guard_falling_off_the_bottom_wraps_to_the_top() {
+        // Guards wrap the same way the gibbon does: falling off the bottom
+        // row re-enters them at the top.
+        let mut game = game(vec![level(
+            "s..................g\n\
+             ....................",
+        )]);
+        advance(&mut game, GRID_Y as usize - 1);
+        assert_eq!(game.guards[0].y, GRID_Y as i32 - 1);
+        advance(&mut game, 1);
+        assert_eq!(game.guards[0].y, 0);
+        assert_eq!(game.guards[0].prev_y, GRID_Y as i32 - 1);
+    }
+
+    #[test]
+    fn wrapping_interpolation_exits_the_bottom_edge() {
+        // During a wrap move the first copy slides out past the bottom edge
+        // instead of snapping back to the top row.
+        let actor = Actor {
+            x: 1,
+            y: 0,
+            prev_x: 1,
+            prev_y: GRID_Y as i32 - 1,
+            facing: 1,
+        };
+        let (_, bottom) = cell_screen(1, GRID_Y as i32 - 1);
+        assert_eq!(interpolate(actor, 0), (cell_screen(1, 0).0, bottom));
+        let (px, py) = interpolate(actor, SIM_FRAMES - 1);
+        assert_eq!(px, cell_screen(1, 0).0);
+        assert!(py > bottom, "the exiting copy slides past the bottom edge");
+        // The entering copy sits one board height above, starting above the
+        // top row.
+        assert!(py - BOARD_PY < cell_screen(1, 0).1);
     }
 
     #[test]
@@ -857,7 +1018,7 @@ mod tests {
         // A floor directly under the spawn: no fall.
         let mut game = game(vec![level(
             "s...................g\n\
-             ##..................\n\
+             ==..................\n\
              ....................",
         )]);
         advance(&mut game, 10);
@@ -866,30 +1027,63 @@ mod tests {
 
     #[test]
     fn gibbon_climbs_ladders() {
-        // Ladder shaft at x0, spawn at the bottom.
+        // Ladder shaft at x0, spawn beside the bottom rung.
         let mut game = game(vec![level(
-            "|...................g\n\
-             |...................g\n\
-             |...................g\n\
-             |...................g\n\
-             |...................g\n\
-             |...................g\n\
-             |...................g\n\
-             |...................g\n\
-             |...................g\n\
-             s...................g\n\
-             ####################",
+            "|....................\n\
+             |....................\n\
+             |....................\n\
+             |....................\n\
+             |....................\n\
+             |....................\n\
+             |....................\n\
+             |....................\n\
+             |....................\n\
+             |s...................\n\
+             ====================",
         )]);
-        // Ladder goes all the way to the bottom row; spawn sits on it.
+        // Step onto the ladder, then climb up to the top.
+        game.set_action(Some(Action::Left));
+        advance(&mut game, 1);
+        assert_eq!((game.gibbon.x, game.gibbon.y), (0, 9));
         game.set_action(Some(Action::Up));
         advance(&mut game, 12);
         assert_eq!(game.gibbon.y, 0);
-        // Climbing back down. The spawn cell itself is empty (`s`) and the
-        // floor is below it, so Down steps off the bottom rung (y=8) onto the
-        // spawn cell (y=9) standing on the floor and stops.
+        // Climbing back down: the floor below the bottom rung stops it on the
+        // ladder, and stepping off brings it back onto the spawn cell.
         game.set_action(Some(Action::Down));
         advance(&mut game, 12);
         assert_eq!(game.gibbon.y, 9);
+        game.set_action(Some(Action::Right));
+        advance(&mut game, 1);
+        assert_eq!(game.gibbon.x, 1);
+    }
+
+    #[test]
+    fn a_wood_cap_above_the_ladder_blocks_climbing() {
+        // A solid wood cell directly above the ladder's top rung plugs the
+        // shaft: the gibbon cannot climb up into it.
+        let mut game = game(vec![level(
+            "=....................\n\
+             |....................\n\
+             |....................\n\
+             |....................\n\
+             |....................\n\
+             |....................\n\
+             |....................\n\
+             |....................\n\
+             |....................\n\
+             |s...................\n\
+             ====================",
+        )]);
+        game.set_action(Some(Action::Left));
+        advance(&mut game, 1);
+        assert_eq!((game.gibbon.x, game.gibbon.y), (0, 9));
+        game.set_action(Some(Action::Up));
+        advance(&mut game, 20);
+        // It stops on the rung just below the wood instead of climbing into
+        // the solid cell.
+        assert_eq!((game.gibbon.x, game.gibbon.y), (0, 1));
+        assert_eq!(game.action, None);
     }
 
     #[test]
@@ -909,24 +1103,67 @@ mod tests {
     }
 
     #[test]
-    fn climbing_up_onto_a_railing_works() {
-        // Ladder below a railing: climbing up passes through the railing.
+    fn climbing_up_onto_a_bare_railing_is_blocked() {
+        // Ladder below a railing with nothing above it: the gibbon climbs to
+        // the top rung but cannot climb up onto the railing.
         let mut game = game(vec![level(
             "-..................g\n\
              |..................g\n\
-             s..................g\n\
-             ....................",
+             |..................g\n\
+             |..................g\n\
+             |..................g\n\
+             |..................g\n\
+             |..................g\n\
+             |..................g\n\
+             |..................g\n\
+             |s.................g\n\
+             ====================",
         )]);
+        game.set_action(Some(Action::Left));
+        advance(&mut game, 1);
+        assert_eq!((game.gibbon.x, game.gibbon.y), (0, 9));
         game.set_action(Some(Action::Up));
-        advance(&mut game, 4);
+        advance(&mut game, 12);
+        // It stops on the top rung: the railing above it has no ladder above.
+        assert_eq!(game.gibbon.y, 1);
+        assert_eq!(game.gibbon.x, 0);
+        assert_eq!(game.action, None);
+    }
+
+    #[test]
+    fn climbing_up_through_a_railing_needs_a_ladder_above() {
+        // Ladder shaft with a railing halfway up: a ladder above the railing
+        // lets the gibbon climb straight through it to the top.
+        let mut game = game(vec![level(
+            "|..................g\n\
+             |..................g\n\
+             -..................g\n\
+             |..................g\n\
+             |..................g\n\
+             |..................g\n\
+             |..................g\n\
+             |..................g\n\
+             |..................g\n\
+             |s.................g\n\
+             ====================",
+        )]);
+        game.set_action(Some(Action::Left));
+        advance(&mut game, 1);
+        assert_eq!((game.gibbon.x, game.gibbon.y), (0, 9));
+        game.set_action(Some(Action::Up));
+        advance(&mut game, 12);
+        // It climbs through the railing (which has a ladder above it) to the
+        // top of the shaft.
         assert_eq!(game.gibbon.y, 0);
+        assert_eq!(game.gibbon.x, 0);
+        assert_eq!(game.action, None);
     }
 
     #[test]
     fn walls_block_horizontal_movement() {
         let mut game = game(vec![level(
             "s*..................g\n\
-             ##..................\n\
+             ==..................\n\
              ....................",
         )]);
         game.set_action(Some(Action::Right));
@@ -941,7 +1178,7 @@ mod tests {
         // until the brick wall; no key needs to be held along the way.
         let mut game = game(vec![level(
             "s.................*.\n\
-             ####################\n\
+             ====================\n\
              ....................",
         )]);
         game.set_action(Some(Action::Right));
@@ -956,7 +1193,7 @@ mod tests {
         // the renderer slides the gibbon between them.
         let mut game = game(vec![level(
             "s.................*.\n\
-             ####################\n\
+             ====================\n\
              ....................",
         )]);
         game.set_action(Some(Action::Right));
@@ -974,7 +1211,7 @@ mod tests {
         // one, so the renderer shows it standing still.
         let mut game = game(vec![level(
             "s.................*.\n\
-             ####################\n\
+             ====================\n\
              ....................",
         )]);
         game.set_action(Some(Action::Right));
@@ -990,11 +1227,11 @@ mod tests {
         // current one and the renderer slides it between them.
         let mut game = game(vec![level(
             "s..................g\n\
-             ##..................\n\
+             ==..................\n\
              ....................",
         )]);
         advance(&mut game, 3);
-        assert_eq!(game.guards.len(), 1);
+        assert_eq!(game.guards.len(), 2);
         for guard in &game.guards {
             assert_ne!(
                 (guard.prev_x, guard.prev_y),
@@ -1010,7 +1247,7 @@ mod tests {
         // gibbon stops and the direction clears.
         let mut game = game(vec![level(
             "s...................g\n\
-             ##..................\n\
+             ==..................\n\
              ....................",
         )]);
         game.set_action(Some(Action::Down));
@@ -1024,7 +1261,7 @@ mod tests {
         // Nothing climbable above the spawn: Up is blocked and clears.
         let mut game = game(vec![level(
             "s...................g\n\
-             ##..................\n\
+             ==..................\n\
              ....................",
         )]);
         game.set_action(Some(Action::Up));
@@ -1035,8 +1272,9 @@ mod tests {
 
     #[test]
     fn climbing_past_the_top_rung_stops() {
-        // Ladder shaft at x0 from the floor to the ceiling; the rung above
-        // the top is out of bounds, so the Up latch clears at the top.
+        // Ladder shaft at x0 from the floor to the ceiling; the gibbon steps
+        // onto the ladder, and the rung above the top is out of bounds, so
+        // the Up latch clears at the top.
         let mut game = game(vec![level(
             "|...................g\n\
              |...................g\n\
@@ -1047,9 +1285,12 @@ mod tests {
              |...................g\n\
              |...................g\n\
              |...................g\n\
-             s...................g\n\
-             ####################",
+             |s.................g\n\
+             ====================",
         )]);
+        game.set_action(Some(Action::Left));
+        advance(&mut game, 1);
+        assert_eq!((game.gibbon.x, game.gibbon.y), (0, 9));
         game.set_action(Some(Action::Up));
         advance(&mut game, 12);
         assert_eq!(game.gibbon.y, 0);
@@ -1058,9 +1299,9 @@ mod tests {
 
     #[test]
     fn climbing_up_onto_the_top_of_the_ladder() {
-        // Ladder at x0 with open space above its top rung: the gibbon climbs
-        // up and stands on top of the ladder (the open cell above the top
-        // rung) since nothing blocks it.
+        // Ladder at x0 with open space above its top rung: the gibbon steps
+        // onto the ladder, climbs up and stands on top of it (the open cell
+        // above the top rung) since nothing blocks it.
         let mut game = game(vec![level(
             "...................g\n\
              |..................g\n\
@@ -1071,9 +1312,12 @@ mod tests {
              |..................g\n\
              |..................g\n\
              |..................g\n\
-             s...................g\n\
-             ####################",
+             |s.................g\n\
+             ====================",
         )]);
+        game.set_action(Some(Action::Left));
+        advance(&mut game, 1);
+        assert_eq!((game.gibbon.x, game.gibbon.y), (0, 9));
         game.set_action(Some(Action::Up));
         advance(&mut game, 12);
         assert_eq!(game.gibbon.y, 0); // the open cell on top of the ladder
@@ -1126,7 +1370,7 @@ mod tests {
              ....................\n\
              ....................\n\
              ....................\n\
-             ####################",
+             ====================",
         )]);
         // The spawn hangs from the ladder bottom (the ladder is right above).
         game.set_action(Some(Action::Down));
@@ -1149,7 +1393,7 @@ mod tests {
              ....................\n\
              ....................\n\
              ....................\n\
-             ####################",
+             ====================",
         )]);
         advance(&mut game, 1);
         assert_eq!((game.gibbon.x, game.gibbon.y), (0, 1)); // hanging
@@ -1170,7 +1414,7 @@ mod tests {
              ....................\n\
              ........s..........\n\
              ....................\n\
-             ####################",
+             ====================",
         )]);
         game.gibbon = Actor::at(0, 1); // bottom rung, railing below
         game.set_action(Some(Action::Down));
@@ -1194,7 +1438,7 @@ mod tests {
              |..................g\n\
              ....................\n\
              s..................g\n\
-             ####################",
+             ====================",
         )]);
         game.gibbon = Actor::at(0, 5);
         game.guards = vec![Actor::at(0, 3)]; // bottom rung, open air below
@@ -1208,7 +1452,7 @@ mod tests {
         // Gibbon stands on a wooden floor and digs the tile down-left.
         let mut game = game(vec![level(
             ".s..................g\n\
-             ##..................\n\
+             ==..................\n\
              ....................",
         )]);
         assert_eq!(game.level.tile(0, 1), Tile::Wood);
@@ -1228,8 +1472,8 @@ mod tests {
         // and the level restarts (like being caught by a guard).
         let mut game = game(vec![level(
             ".s.................g\n\
-             ##..................#\n\
-             ####################",
+             ==..................=\n\
+             ====================",
         )]);
         game.set_action(Some(Action::DigLeft));
         advance(&mut game, 1);
@@ -1253,8 +1497,8 @@ mod tests {
         // to its starting position immediately.
         let mut game = game(vec![level(
             ".s.................g\n\
-             ##..................#\n\
-             ####################",
+             ==..................=\n\
+             ====================",
         )]);
         game.set_action(Some(Action::DigLeft));
         advance(&mut game, 1);
@@ -1282,7 +1526,7 @@ mod tests {
         // over exactly SIM_FRAMES frames (the time to travel one cell).
         let mut game = game(vec![level(
             ".s..................g\n\
-             ##..................\n\
+             ==..................\n\
              ....................",
         )]);
         game.set_action(Some(Action::DigLeft));
@@ -1307,7 +1551,7 @@ mod tests {
         // SIM_FRAMES frames; the cell stays a usable pit until the end.
         let mut game = game(vec![level(
             ".s..................g\n\
-             ##..................\n\
+             ==..................\n\
              ....................",
         )]);
         game.set_action(Some(Action::DigLeft));
@@ -1330,12 +1574,146 @@ mod tests {
     }
 
     #[test]
+    fn destroy_and_restore_frame_indices_span_the_sheet() {
+        // 12-frame sheet: the dig animation runs from the intact first frame
+        // to the destroyed last frame as the SIM_FRAMES destruction frames
+        // elapse, and the regrow animation runs back the other way.
+        assert_eq!(destroy_frame(SIM_FRAMES, 12), 0);
+        assert_eq!(destroy_frame(SIM_FRAMES / 2, 12), 5);
+        assert_eq!(destroy_frame(0, 12), 11);
+        assert_eq!(restore_frame(SIM_FRAMES, 12), 11);
+        assert_eq!(restore_frame(SIM_FRAMES / 2, 12), 5);
+        assert_eq!(restore_frame(0, 12), 0);
+        // Empty or single-frame sheets never pick an out-of-range index.
+        assert_eq!(destroy_frame(0, 0), 0);
+        assert_eq!(restore_frame(0, 0), 0);
+        assert_eq!(destroy_frame(0, 1), 0);
+        assert_eq!(restore_frame(0, 1), 0);
+    }
+
+    /// The palette-index pixels of one board cell of a framebuffer.
+    fn cell_pixels(fb: &Framebuffer, x: i32, y: i32) -> Vec<u8> {
+        let (px, py) = cell_screen(x, y);
+        let width = fb.width() as i32;
+        let mut out = Vec::with_capacity((CELL * CELL) as usize);
+        for row in 0..CELL {
+            let o = ((py + row) * width + px) as usize;
+            out.extend_from_slice(&fb.pixels()[o..o + CELL as usize]);
+        }
+        out
+    }
+
+    /// Decode the embedded wood sheet as the game would, so rendering can be
+    /// compared against its frames.
+    fn wood_sheet() -> Vec<RleSprite> {
+        let data = crate::assets::load("wood.png").expect("wood sheet embedded");
+        let mut palette = Palette::default();
+        SpriteSheet::from_png(data, &mut palette, CELL as usize, CELL as usize, 12)
+            .expect("wood sheet decodes")
+            .to_rle()
+            .expect("wood sheet encodes")
+    }
+
+    /// Decode the embedded ladder sheet as the game would.
+    fn ladder_sheet() -> Vec<RleSprite> {
+        let data = crate::assets::load("ladder.png").expect("ladder sheet embedded");
+        let mut palette = Palette::default();
+        SpriteSheet::from_png(data, &mut palette, CELL as usize, CELL as usize, 1)
+            .expect("ladder sheet decodes")
+            .to_rle()
+            .expect("ladder sheet encodes")
+    }
+
+    fn draw_game(game: &Game, wood: &[RleSprite], ladder: &[RleSprite]) -> Framebuffer {
+        let mut fb = Framebuffer::new();
+        game.draw(
+            &mut fb,
+            0,
+            &GameSprites {
+                fruit: &[],
+                gibbon: &[],
+                guard: &[],
+                wood,
+                ladder,
+            },
+        );
+        fb
+    }
+
+    #[test]
+    fn wood_tiles_render_from_the_intact_frame() {
+        // A static wood tile is drawn from the intact first frame of the
+        // sheet rather than procedurally.
+        let wood = wood_sheet();
+        assert_eq!(wood.len(), 12);
+
+        let mut game = game(vec![level(
+            "=s...................\n\
+             ....................",
+        )]);
+        game.gibbon = Actor::at(19, 11); // off-screen
+        game.guards = vec![];
+        let fb = draw_game(&game, &wood, &[]);
+
+        let mut expected = Framebuffer::new();
+        let (px, py) = cell_screen(0, 0);
+        wood[0].draw(&mut expected, px, py);
+        assert_eq!(cell_pixels(&fb, 0, 0), cell_pixels(&expected, 0, 0));
+    }
+
+    #[test]
+    fn destroyed_wood_stays_visible_in_the_dug_cell() {
+        // Once the dig animation finishes, the completely destroyed wood (the
+        // sheet's last frame) is still drawn in the place where it was dug,
+        // over the open pit.
+        let wood = wood_sheet();        let mut game = game(vec![level(
+            ".s.................g\n\
+             =...................\n\
+             ....................",
+        )]);
+        game.set_action(Some(Action::DigLeft));
+        advance(&mut game, 2); // 1 tick digs, the next finishes the animation
+        assert!(matches!(game.holes[0].phase, HolePhase::Regrowing));
+        assert_eq!(game.level.tile(0, 1), Tile::Empty);
+        game.gibbon = Actor::at(19, 11); // off-screen
+        game.guards = vec![];
+        let fb = draw_game(&game, &wood, &[]);
+
+        let mut expected = Framebuffer::new();
+        let (px, py) = cell_screen(0, 1);
+        draw_hole(&mut expected, 0, 1);
+        wood[wood.len() - 1].draw(&mut expected, px, py);
+        assert_eq!(cell_pixels(&fb, 0, 1), cell_pixels(&expected, 0, 1));
+    }
+
+    #[test]
+    fn ladders_render_from_the_sheet() {
+        // A ladder rung is drawn from ladder.png's single frame rather than
+        // procedurally.
+        let ladder = ladder_sheet();
+        assert_eq!(ladder.len(), 1);
+
+        let mut game = game(vec![level(
+            "|s...................\n\
+             ....................",
+        )]);
+        game.gibbon = Actor::at(19, 11); // off-screen
+        game.guards = vec![];
+        let fb = draw_game(&game, &[], &ladder);
+
+        let mut expected = Framebuffer::new();
+        let (px, py) = cell_screen(0, 0);
+        ladder[0].draw(&mut expected, px, py);
+        assert_eq!(cell_pixels(&fb, 0, 0), cell_pixels(&expected, 0, 0));
+    }
+
+    #[test]
     fn digging_works_while_airborne() {
         // No solid ground under the gibbon: it can still dig a wooden tile
         // diagonally below, spending the tick on digging instead of falling.
         let mut game = game(vec![level(
             ".s.................g\n\
-             #.#...................",
+             =.=...................",
         )]);
         game.set_action(Some(Action::DigLeft));
         advance(&mut game, 1);
@@ -1352,7 +1730,7 @@ mod tests {
         // the tick, so the fall only starts afterwards.
         let mut game = game(vec![level(
             "...s................\n\
-             ####................\n\
+             ====................\n\
              ....................",
         )]);
         // Step right off the wood at x3 onto the open cell at x4.
@@ -1376,7 +1754,7 @@ mod tests {
         // The diagonal below-left is brick: nothing to dig.
         let mut game = game(vec![level(
             ".s..................g\n\
-             *#..................\n\
+             *=..................\n\
              ....................",
         )]);
         game.set_action(Some(Action::DigLeft));
@@ -1402,8 +1780,8 @@ mod tests {
     fn digging_is_blocked_by_a_solid_cell_above_the_target() {
         // The tile right above the target is wood: the dig is blocked.
         let mut game = game(vec![level(
-            "#s...................\n\
-             #.#...................",
+            "=s...................\n\
+             =.=...................",
         )]);
         game.set_action(Some(Action::DigLeft));
         advance(&mut game, 1);
@@ -1416,7 +1794,7 @@ mod tests {
         // The tile right above the target is brick: the dig is blocked.
         let mut game = game(vec![level(
             "*s...................\n\
-             #.#...................",
+             =.=...................",
         )]);
         game.set_action(Some(Action::DigLeft));
         advance(&mut game, 1);
@@ -1431,7 +1809,7 @@ mod tests {
         // the landing cell) and resolves back to no action.
         let mut game = game(vec![level(
             "....s.................g\n\
-             ####################\n\
+             ====================\n\
              ....................",
         )]);
         game.set_action(Some(Action::Left));
@@ -1452,7 +1830,7 @@ mod tests {
         // Fruit sits one cell right of the spawn.
         let mut game = game(vec![level(
             "s@..................g\n\
-             ##..................\n\
+             ==..................\n\
              ....................",
         )]);
         game.set_action(Some(Action::Right));
@@ -1468,12 +1846,13 @@ mod tests {
         // the guard never closes the gap.
         let mut game = game(vec![level(
             "g...s..............\n\
-             ####################\n\
+             ====================\n\
              ....................",
         )]);
         assert_eq!(game.gibbon.x, 4);
-        assert_eq!(game.guards.len(), 1);
+        assert_eq!(game.guards.len(), 2);
         assert_eq!(game.guards[0].x, 0);
+        assert_eq!(game.guards[1].x, 0);
         game.set_action(Some(Action::Right));
         for _ in 0..12 {
             let gap_before = game.gibbon.x - game.guards[0].x;
@@ -1485,6 +1864,20 @@ mod tests {
     }
 
     #[test]
+    fn a_single_guard_spawn_places_both_guards_there() {
+        // With only one 'g' in the level, both guards start on that cell and
+        // chase with different priorities (guard 0 vertical, guard 1
+        // horizontal).
+        let game = game(vec![level(
+            "s..................g\n\
+             ....................",
+        )]);
+        assert_eq!(game.guards.len(), 2);
+        assert_eq!((game.guards[0].x, game.guards[0].y), (19, 0));
+        assert_eq!((game.guards[1].x, game.guards[1].y), (19, 0));
+    }
+
+    #[test]
     fn guard_below_the_gibbon_walks_sideways_when_it_cannot_climb() {
         // A guard that fell below the gibbon with only air above it must not
         // freeze waiting for the gibbon to come down: it keeps minimising the
@@ -1493,8 +1886,14 @@ mod tests {
             "s..................g\n\
              ....................\n\
              ....................\n\
-             ##..................\n\
-             ....................\n",
+             ==..................\n\
+             ....................\n\
+             ....................\n\
+             ....................\n\
+             ....................\n\
+             ....................\n\
+             ....................\n\
+             ..==................",
         )]);
         game.gibbon = Actor::at(5, 0);
         game.guards = vec![Actor::at(0, 2)];
@@ -1528,7 +1927,7 @@ mod tests {
              .....|.............g\n\
              .....|.............g\n\
              .....s............g\n\
-             ####################",
+             ====================",
         )]);
         game.gibbon = Actor::at(5, 0);
         game.guards = vec![Actor::at(5, 8), Actor::at(10, 8)];
@@ -1543,7 +1942,7 @@ mod tests {
     fn guards_catch_the_gibbon_and_it_respawns() {
         let mut game = game(vec![level(
             "s..................g\n\
-             ##..................\n\
+             ==..................\n\
              ....................",
         )]);
         // A guard one cell right of the gibbon walks onto it and catches it.
@@ -1564,25 +1963,33 @@ mod tests {
     fn losing_all_lives_ends_the_game() {
         let mut game = game(vec![level(
             "s...................g\n\
-             ##..................\n\
+             ==..................\n\
              ....................",
         )]);
         game.lives = 1;
         game.guards = vec![Actor::at(1, 0)];
         advance(&mut game, 1);
         assert_eq!(game.game_state, State::GameOver);
+        // After the game-over timeout the whole game restarts from level one
+        // with full lives.
+        advance(&mut game, GAME_OVER_TICKS);
+        assert_eq!(game.game_state, State::Playing);
+        assert_eq!(game.level_index, 0);
+        assert_eq!(game.lives, LIVES);
+        assert_eq!(game.gibbon.x, 0);
+        assert_eq!(game.gibbon.y, 0);
     }
 
     #[test]
     fn levels_advance_after_clear() {
         let a = level(
             "s@..................g\n\
-             ##..................\n\
+             ==..................\n\
              ....................",
         );
         let b = level(
             "s@..................g\n\
-             ##..................\n\
+             ==..................\n\
              ....................",
         );
         let mut game = game(vec![a, b]);
@@ -1597,7 +2004,7 @@ mod tests {
     fn completing_the_last_level_wins() {
         let mut game = game(vec![level(
             "s@..................g\n\
-             ##..................\n\
+             ==..................\n\
              ....................",
         )]);
         game.set_action(Some(Action::Right));

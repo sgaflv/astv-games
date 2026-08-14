@@ -97,7 +97,7 @@ pub fn parse(text: &str) -> Option<Level> {
             }
             let tile = match ch {
                 '|' => Tile::Ladder,
-                '#' => Tile::Wood,
+                '=' => Tile::Wood,
                 '*' => Tile::Brick,
                 '-' => Tile::Railing,
                 '@' => {
@@ -188,14 +188,25 @@ mod tests {
             || is_ladder(tiles, x, y + 1)
     }
 
-    /// Drop one cell at a time until supported or on the bottom row, exactly
-    /// like `Game::step_gravity` applied repeatedly.
+    /// Drop one cell at a time until supported, wrapping around to the top
+    /// once when falling off the bottom row, exactly like `Game::step_gravity`
+    /// applied repeatedly.
     fn fall(tiles: &[Tile], x: i32, y: i32) -> i32 {
         let mut y = y;
-        while y < GRID_Y as i32 - 1 && !supported(tiles, x, y) {
-            y += 1;
+        let mut wrapped = false;
+        loop {
+            if supported(tiles, x, y) {
+                return y;
+            }
+            if y < GRID_Y as i32 - 1 {
+                y += 1;
+            } else if !wrapped {
+                y = 0;
+                wrapped = true;
+            } else {
+                return y;
+            }
         }
-        y
     }
 
     /// `(rest cells, cells ever occupied)`, returned by the BFS below.
@@ -212,14 +223,22 @@ mod tests {
         visited.insert((sx, sy));
         let mut q = VecDeque::from([(sx, sy)]);
         while let Some((x, y)) = q.pop_front() {
-            // Climb up: a ladder above is always climbable, and from a ladder
-            // any non-solid cell above (the top of the ladder) is reachable
-            // too.
+            // Climb up: the current cell must be a ladder or railing, and the
+            // cell above decides what is possible — a ladder rung is always
+            // climbable, a railing only when it continues as a ladder above
+            // (climbing onto the top of a bare railing is impossible), and
+            // open air only from the top of a ladder.
             if y > 0 {
                 let above = tile_at(tiles, x, y - 1);
-                if above == Some(Tile::Ladder)
-                    || (is_ladder(tiles, x, y) && !matches!(above, Some(t) if t.is_solid()))
-                {
+                let can_climb = match above {
+                    Some(Tile::Ladder) => is_lr(tiles, x, y),
+                    Some(Tile::Railing) => {
+                        is_lr(tiles, x, y) && tile_at(tiles, x, y - 2) == Some(Tile::Ladder)
+                    }
+                    Some(t) if t.is_solid() => false,
+                    _ => is_ladder(tiles, x, y),
+                };
+                if can_climb {
                     let nxt = (x, y - 1);
                     if seen.insert(nxt) {
                         visited.insert(nxt);
@@ -352,16 +371,16 @@ mod tests {
     fn level() -> Level {
         parse(
             "-..@.........@......\n\
-             |###################\n\
+             |===================\n\
              |...................\n\
              |.........@.........\n\
-             |.........###|######\n\
+             |.........===|======\n\
              |.............|.....\n\
              |.........@...|.....\n\
-             |#####|##########|##\n\
+             |=====|==========|==\n\
              |.....|..........|..\n\
              |.s...|....@.....|.g\n\
-             ####################",
+             ====================",
         )
         .expect("the sample level parses")
     }
@@ -402,7 +421,7 @@ mod tests {
     fn too_wide_and_too_tall_levels_are_clipped_not_rejected() {
         // Wider than the board: the trailing cells are clipped, so the spawn
         // in the last column survives while the extra wood is dropped.
-        let text = format!("{}s##", ".".repeat(GRID_X - 1));
+        let text = format!("{}s==", ".".repeat(GRID_X - 1));
         let level = parse(&text).expect("clipped width still parses");
         assert_eq!(level.spawn, (GRID_X - 1, 0));
         assert_eq!(level.tile(GRID_X - 1, 0), Tile::Empty);

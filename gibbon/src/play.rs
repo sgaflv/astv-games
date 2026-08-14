@@ -30,6 +30,15 @@ const FRUIT_FRAMES: usize = 12;
 const GIBBON_SPRITE: &str = "gibbon.png";
 const GUARD_SPRITE: &str = "guard.png";
 
+// The wood wall sheet: 12 frames of 24x24, the first the intact wall and the
+// last the completely destroyed wood that stays in the dug cell.
+const WOOD_SPRITE: &str = "wood.png";
+const WOOD_FRAMES: usize = 12;
+
+// The ladder sheet: one 24x24 frame drawn for every ladder rung.
+const LADDER_SPRITE: &str = "ladder.png";
+const LADDER_FRAMES: usize = 1;
+
 const PAUSED_POS: (i32, i32) = (6, 16);
 
 /// A selected game: owns the sprite sheets and the palette up front (created
@@ -41,6 +50,8 @@ pub struct Playing {
     fruit: Vec<RleSprite>,
     gibbon: Vec<RleSprite>,
     guard: Vec<RleSprite>,
+    wood: Vec<RleSprite>,
+    ladder: Vec<RleSprite>,
     /// The palette the sprites were quantized against; also the scene's
     /// palette, so framebuffer indices match the loaded sprites.
     palette: Palette,
@@ -70,11 +81,15 @@ impl Playing {
         let fruit = Self::load_sprites(&mut palette, FRUIT_SPRITE, FRUIT_FRAMES);
         let gibbon = Self::load_sprites(&mut palette, GIBBON_SPRITE, CHARACTER_FRAMES);
         let guard = Self::load_sprites(&mut palette, GUARD_SPRITE, CHARACTER_FRAMES);
+        let wood = Self::load_sprites(&mut palette, WOOD_SPRITE, WOOD_FRAMES);
+        let ladder = Self::load_sprites(&mut palette, LADDER_SPRITE, LADDER_FRAMES);
         Playing {
             game: None,
             fruit,
             gibbon,
             guard,
+            wood,
+            ladder,
             palette,
             sim_accumulator: 0.0,
             paused: false,
@@ -181,6 +196,8 @@ impl Scene for Playing {
             fruit: &self.fruit,
             gibbon: &self.gibbon,
             guard: &self.guard,
+            wood: &self.wood,
+            ladder: &self.ladder,
         };
         game.draw(fb, game.frame_cnt, &sprites);
 
