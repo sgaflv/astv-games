@@ -3,7 +3,7 @@
 The workspace holds two lightweight, integer-based 2D games — a two-player
 snake and a single-player Lode Runner-style gibbon — rendered into a 480x270
 CPU framebuffer and presented via miniquad/OpenGL ES with integer
-nearest-neighbour scaling. Bevy has been removed completely.
+nearest-neighbour scaling.
 
 ## Pipeline
 
@@ -98,26 +98,18 @@ below). The app package selects between them.
   reversals are rejected).
 * `draw()` renders body + interpolated head (eyes/tongue) through `Renderer`.
 
-## Game (`snake/src/game.rs`)
+### Game (`snake/src/game.rs`)
 
-* Fixed simulation step: 60 Hz (`SIM_STEP_HZ`), snakes move every 0.5 s
-  (`TICK_STEPS = 30` steps per move), in lockstep, sharing one food.
 * `Game` owns `Vec<Snake>` (up to `PLAYERS = 2`), the shared `food`, the RNG
-  (food respawn off any snake body) and the shared tick clock/`alpha()`.
+  (food respawn off any snake body) and the shared tick clock.
   `Game::new(players)` spawns 1 or 2 snakes; the menu chooses the count via
   `Playing::start`.
-* Colors are drawn as the palette's exact entries, so `game.rs`/`snake.rs` draw
-  with colors imported from the game's `palette.rs` (see
-  `snake/src/palette.rs`, `gibbon/src/palette.rs`), which `Playing::new` folds
-  into the scene palette.
 * Board: `GRID_SIZE_X = 20` x `GRID_SIZE_Y = 11` cells, 0-based coords
   (`x` in 0..20, `y` in 0..11, top-left origin), edges wrap.
 * Direction changes are buffered in a small ring buffer
   (`MAX_QUEUED_INPUTS = 3`); repeats and reversals are rejected.
-* Movement is interpolated between ticks using fixed-point `alpha`
-  (0..=65536) so rendering stays smooth while simulation stays deterministic.
-* The sim is pure Rust (no Bevy/GPU types) and draws through the `Renderer`
-  trait, so it runs identically in desktop, Android, and tests.
+* Movement is interpolated between game state updates
+* The sim is pure Rust and draws through the `Renderer` trait.
 * Every frame the framebuffer is fully repainted (clear + grid + snakes + food +
   HUD), so no incremental/dirty tracking is needed.
 
@@ -127,21 +119,26 @@ The `gibbon` package is a single-player Lode Runner-style game: run and climb a
 20x11 grid, collect every fruit before the two guards catch you.
 
 * Fixed simulation step: 60 Hz, and every actor (the gibbon and the guards)
-  crosses one cell every `SIM_FRAMES = 10` frames (6 cells per second), so
+  crosses one cell every `SIM_FRAMES = 24`, so
   they all move at the same constant speed.
 * Tiles: `Wood` (#) and `Brick` (*) are solid, `Ladder` (|) and `Railing` (-)
   are climbable, `Fruit` (@) is collectible, everything else is empty.
-* Movement: left/right into any non-solid cell; up/down only into a ladder or
-  railing. Climbing stops at the top rung — an actor never leaves the ladder
-  into the open cell above it. An actor is *supported* when the cell below is
-  solid, or it stands on (or hangs from) a ladder/railing; otherwise gravity
-  pulls it one cell per tick. Fruits are collected the moment the gibbon
-  passes through their cell, including mid-fall.
-* Digging: pressing GameA/F1 (down-left) or GameB/F2 (down-right), edge-
-  triggered once per press, digs the wood tile diagonally below, opening a hole
-  for 10 seconds (`DIG_TICKS = 60` moves) before it regrows (deferred while a
-  character stands in it). Only possible while standing on solid ground, and
-  only against wood.
+* Movement: left/right into any non-solid cell; up into a ladder, or from a
+  ladder onto a railing or fruit directly above it. Climbing stops at the top
+  rung — an actor never leaves the ladder into the open cell above it. Down
+  moves into a ladder or railing below (stopping on the railing to hang), and
+  also steps/jumps off a ladder or railing (or from directly under one) into
+  open air, falling until supported. An actor is *supported* when the cell
+  below is solid, or it stands on a ladder, hangs from a railing; 
+  otherwise gravity pulls it one cell per tick. Fruits are
+  collected the moment the gibbon passes through their cell, including
+  mid-fall.
+* Digging: pressing GameA/F2 (down-right) or GameB/F1 (down-left), edge-
+  triggered once per press, queues a dig of the wood tile diagonally below. It
+  fires once the gibbon's move has settled, opening a hole for 10 seconds
+  before it regrows (deferred while a character stands
+  in it); the gibbon then stops instead of continuing its held direction. Only
+  possible while standing on solid ground, and only against wood.
 * Guards chase the gibbon — guard 0 minimizes the vertical distance first,
   guard 1 the horizontal — falling back to a random legal move so they never
   freeze. Because guards move at the same constant speed as the gibbon, a
@@ -153,10 +150,6 @@ The `gibbon` package is a single-player Lode Runner-style game: run and climb a
 * Levels are plain text (see `gibbon/src/level.rs`), parsed at build time into
   embedded `Level`s. The parser pads short rows, clips oversized ones and
   skips levels without a gibbon spawn.
-* A `#[cfg(test)]` BFS model in `level.rs` mirrors the game's movement and dig
-  rules to assert that every embedded level has all its fruits reachable
-  (including fruits collected while falling through a dug hole), so broken
-  level files fail the test suite.
 
 ## Rendering (`engine/src/render.rs`, `engine/src/font.rs`)
 
@@ -193,10 +186,6 @@ The `gibbon` package is a single-player Lode Runner-style game: run and climb a
   the game draws with: `RleSprite::draw(&mut renderer, x, y)` blits the frame
   through `Renderer::draw_rle_image`, writing only opaque runs so transparent
   pixels never touch the framebuffer.
-* Each game's fruit uses its own embedded `apple_rotate.png` sheet (12 frames of
-  24x24, one board cell), animated one frame per move tick. Gibbon also embeds
-  its character sheets (`gibbon.png`, `guard.png`: 5 frames each, animated from
-  the walking frames) and its text levels, loaded via `level::load_all()`.
 
 ## Presentation (`engine/src/present.rs`)
 
@@ -232,9 +221,7 @@ The `gibbon` package is a single-player Lode Runner-style game: run and climb a
 * Each game owns a `Palette` built as the classic 16-color default (fixed
   slots 0-15: black, blue, green, cyan, red, magenta, brown, light gray, gray,
   and the bright variants; index 255 = transparent) plus the game's own fixed
-  colors via `Palette::add` (snake: `BG`, `GRID`, snake colors, `EYE`, `TONGUE`,
-  `HUD`; gibbon: `BG`, wood/brick/ladder/railing colors, gibbon/guard colors,
-  `HUD`). The games' background colors live in `snake/src/palette.rs`
+  colors via `Palette::add`. The games' background colors live in `snake/src/palette.rs`
   (dark blue-black) and `gibbon/src/palette.rs` (warm purple-black), imported
   by the game modules and drawn through `Renderer`.
 * `Playing::new` builds the game palette first, then decodes the sprite sheets
@@ -263,10 +250,6 @@ The `gibbon` package is a single-player Lode Runner-style game: run and climb a
 * `Input` (`Input` enum) maps Android TV/desktop keys to game actions.
   Player 1: DPAD/WASD + F1-F4; player 2: IJKL + F5-F8 (desktop) or the second
   gamepad (Android). Enter + Back/Escape + Menu/Space for global actions.
-* `Stage` keeps per-player held state (`held: [[bool; INPUT_COUNT]; PLAYERS]`)
-  for edge detection and face buttons (A hides the tongue, B closes the eyes).
-  Auto-repeat suppression is keyed on the physical key (`held_keys`), so
-  holding one key never blocks a different key that maps to the same input.
 * A fixed-timestep accumulator advances the sim at 60 Hz regardless of the
   display rate; rendering runs each `draw` with a bounded max frame time.
 * HUD shows FPS / window size / logical resolution / scale; refreshes every
@@ -304,7 +287,6 @@ The `gibbon` package is a single-player Lode Runner-style game: run and climb a
 * `cargo test --workspace` (all packages: app, engine, gibbon, snake).
 * `cargo clippy --workspace --all-targets -- -D warnings`
 * `cargo fmt --check`
-* `cargo check -p app --target armv7-linux-androideabi` /
-  `cargo check -p app --target aarch64-linux-android` (no Android SDK required).
+* `cargo check -p app --target armv7-linux-androideabi`.
 * APK build requires the Android SDK/NDK, cargo-ndk and a JDK:
   `just apk` (defaults to `armeabi-v7a`).

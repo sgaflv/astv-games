@@ -113,7 +113,7 @@ pub fn parse(text: &str) -> Option<Level> {
                     Tile::Empty
                 }
                 '.' | ' ' => Tile::Empty,
-                _ => Tile::Empty,
+                _ => return None,
             };
             level.set_tile(x, y, tile);
         }
@@ -227,6 +227,20 @@ mod tests {
                 if seen.insert(nxt) {
                     visited.insert(nxt);
                     q.push_back(nxt);
+                }
+            }
+            // Step down off a ladder/railing (or from directly under one) into
+            // open air below, then drop until supported again.
+            if y + 1 < GRID_Y as i32
+                && (is_lr(tiles, x, y) || is_lr(tiles, x, y - 1))
+                && !is_solid(tiles, x, y + 1)
+            {
+                let fy = fall(tiles, x, y + 1);
+                for ty in (y + 1)..=fy {
+                    visited.insert((x, ty));
+                }
+                if seen.insert((x, fy)) {
+                    q.push_back((x, fy));
                 }
             }
             for tx in [x - 1, x + 1] {

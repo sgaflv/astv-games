@@ -47,11 +47,6 @@ pub struct Playing {
     sim_accumulator: f64,
     paused: bool,
     pause_requested: bool,
-    /// Whether each dig button was already held on the last update: a dig
-    /// fires once per new press (GameA/F1 digs down-left, GameB/F2 digs
-    /// down-right), not every frame the button stays held.
-    dig_a_prev: bool,
-    dig_b_prev: bool,
 }
 
 impl Playing {
@@ -84,8 +79,6 @@ impl Playing {
             sim_accumulator: 0.0,
             paused: false,
             pause_requested: false,
-            dig_a_prev: false,
-            dig_b_prev: false,
         }
     }
 
@@ -115,7 +108,7 @@ impl Scene for Playing {
             // Restart from level one when the run is over; irrelevant while
             // playing, clearing or dead.
             Input::Confirm => {
-                if matches!(game.state, State::GameOver | State::Win) {
+                if matches!(game.game_state, State::GameOver | State::Win) {
                     game.restart();
                 }
             }
@@ -146,6 +139,8 @@ impl Scene for Playing {
         let down = input.held(0, Input::Down);
         let left = input.held(0, Input::Left);
         let right = input.held(0, Input::Right);
+        let a = input.held(0, Input::GameA);
+        let b = input.held(0, Input::GameB);
 
         if up && !down {
             game.set_action(Some(Action::Up));
@@ -155,24 +150,11 @@ impl Scene for Playing {
             game.set_action(Some(Action::Left));
         } else if right && !left {
             game.set_action(Some(Action::Right));
+        } else if a {
+            game.set_action(Some(Action::DigRight));
+        } else if b {
+            game.set_action(Some(Action::DigLeft));
         }
-
-        // Dig fires on the press edge of a button: GameA/F1 digs the wooden
-        // tile down-left, GameB/F2 the one down-right. Holding a button does
-        // not dig again.
-        let a = input.held(0, Input::GameA);
-        let b = input.held(0, Input::GameB);
-
-        if a && !self.dig_a_prev {
-            game.dig(-1);
-        }
-
-        if b && !self.dig_b_prev {
-            game.dig(1);
-        }
-
-        self.dig_a_prev = a;
-        self.dig_b_prev = b;
 
         self.sim_accumulator += dt;
 
@@ -209,7 +191,7 @@ impl Scene for Playing {
         }
 
         // Terminal and transitional overlays, drawn centered over the board.
-        match game.state {
+        match game.game_state {
             State::Cleared => overlay(fb, "LEVEL CLEAR", 128),
             State::Dead => overlay(fb, "GOTCHA", 128),
             State::GameOver => {
