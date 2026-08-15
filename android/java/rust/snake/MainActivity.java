@@ -178,6 +178,8 @@ class QuadSurface
     private static final int AXIS_Y = 1;
     private static final int AXIS_HAT_X = 2;
     private static final int AXIS_HAT_Y = 3;
+    private static final int AXIS_RX = 4;
+    private static final int AXIS_RY = 5;
 
     // Direction synthesis from analog input. Many gamepads report the D-pad as
     // a hat switch and never emit KEYCODE_DPAD_* key events, so directions are
@@ -252,10 +254,15 @@ class QuadSurface
         float y = event.getAxisValue(MotionEvent.AXIS_Y);
         float hx = event.getAxisValue(MotionEvent.AXIS_HAT_X);
         float hy = event.getAxisValue(MotionEvent.AXIS_HAT_Y);
+        // Right stick (AXIS_Z / AXIS_RZ) on most gamepads.
+        float rx = event.getAxisValue(MotionEvent.AXIS_Z);
+        float ry = event.getAxisValue(MotionEvent.AXIS_RZ);
         QuadNative.surfaceOnPlayerAxis(player, AXIS_X, x);
         QuadNative.surfaceOnPlayerAxis(player, AXIS_Y, y);
         QuadNative.surfaceOnPlayerAxis(player, AXIS_HAT_X, hx);
         QuadNative.surfaceOnPlayerAxis(player, AXIS_HAT_Y, hy);
+        QuadNative.surfaceOnPlayerAxis(player, AXIS_RX, rx);
+        QuadNative.surfaceOnPlayerAxis(player, AXIS_RY, ry);
 
         // Left stick -> stick directions (Up is negative Y, right is positive
         // X). Distinct keycodes, so the engine sees StickUp/StickDown/...

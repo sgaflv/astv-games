@@ -42,7 +42,8 @@ const TITLE_Y: i32 = 22;
 const PLAYER_Y: [i32; PLAYERS] = [62, 118];
 const HELD_Y: [i32; PLAYERS] = [86, 142];
 const STICK_Y: [i32; PLAYERS] = [102, 158];
-const LEGEND_Y: [i32; 4] = [200, 214, 228, 242];
+const STICK2_Y: [i32; PLAYERS] = [118, 174];
+const LEGEND_Y: [i32; 4] = [204, 218, 232, 246];
 
 /// Short label for a logical input.
 fn input_label(input: Input) -> &'static str {
@@ -86,8 +87,9 @@ pub struct Keys {
     /// The held logical inputs per player, refreshed from `InputState` in
     /// `update`.
     held: [Vec<Input>; PLAYERS],
-    /// The last-seen analog axes per player (`[x, y, hat_x, hat_y]`, -1..=1),
-    /// refreshed from `InputState` in `update`. Zero on desktop.
+    /// The last-seen analog axes per player
+    /// (`[x, y, hat_x, hat_y, rx, ry]`, -1..=1), refreshed from `InputState` in
+    /// `update`. Zero on desktop.
     sticks: [[f32; AXIS_COUNT]; PLAYERS],
 }
 
@@ -148,6 +150,7 @@ impl Scene for Keys {
             let ly = PLAYER_Y[player];
             let hy = HELD_Y[player];
             let sy = STICK_Y[player];
+            let sy2 = STICK2_Y[player];
             let label = format!("PLAYER {}", player + 1);
             fb.draw_text(16, ly, 2, BRIGHT_CYAN, &label);
             let held = held_text(&self.held[player]);
@@ -158,10 +161,19 @@ impl Scene for Keys {
             };
             fb.draw_text(16, hy, 2, color, &held);
 
-            let [x, y, ..] = self.sticks[player];
-            let stick = format!("STICK X {:+.0}% Y {:+.0}%", x * 100.0, y * 100.0);
+            let [x, y, .., rx, ry] = self.sticks[player];
+            let stick = format!("STICK1 X {:+.0}% Y {:+.0}%", x * 100.0, y * 100.0);
             let active = x.abs() > 0.01 || y.abs() > 0.01;
             fb.draw_text(16, sy, 1, if active { BRIGHT_CYAN } else { GRAY }, &stick);
+            let stick2 = format!("STICK2 X {:+.0}% Y {:+.0}%", rx * 100.0, ry * 100.0);
+            let active2 = rx.abs() > 0.01 || ry.abs() > 0.01;
+            fb.draw_text(
+                16,
+                sy2,
+                1,
+                if active2 { BRIGHT_CYAN } else { GRAY },
+                &stick2,
+            );
         }
 
         fb.draw_text(16, LEGEND_Y[0], 1, GRAY, "P1: ARROWS / WASD / F1-F4");
@@ -173,7 +185,13 @@ impl Scene for Keys {
             GRAY,
             "ENTER OK   ESC BACK   SPACE PAUSE",
         );
-        fb.draw_text(16, LEGEND_Y[3], 1, GRAY, "STICK = LIVE ANALOG DEFLECTION");
+        fb.draw_text(
+            16,
+            LEGEND_Y[3],
+            1,
+            GRAY,
+            "STICK1/2 = LIVE LEFT/RIGHT ANALOG",
+        );
     }
 
     fn palette(&self) -> Palette {

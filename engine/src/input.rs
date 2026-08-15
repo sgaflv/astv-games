@@ -22,8 +22,9 @@ use std::sync::{Mutex, OnceLock};
 pub const PLAYERS: usize = 2;
 
 /// Number of analog axes forwarded per player, in index order:
-/// 0 = X (left stick), 1 = Y (left stick), 2 = D-pad hat X, 3 = D-pad hat Y.
-pub const AXIS_COUNT: usize = 4;
+/// 0 = X (left stick), 1 = Y (left stick), 2 = D-pad hat X, 3 = D-pad hat Y,
+/// 4 = X (right stick), 5 = Y (right stick).
+pub const AXIS_COUNT: usize = 6;
 
 /// Number of distinct logical inputs ([`Input`] variants).
 pub const INPUT_COUNT: usize = 15;
@@ -160,7 +161,8 @@ pub struct InputState {
     /// the same input (e.g. arrow-Up while W is held, or a second controller
     /// sharing the slot).
     held_keys: [[Option<u32>; INPUT_COUNT]; PLAYERS],
-    /// Latest analog axes per player (`[x, y, hat_x, hat_y]`, each in -1..=1).
+    /// Latest analog axes per player
+    /// (`[x, y, hat_x, hat_y, rx, ry]`, each in -1..=1).
     /// Updated once per frame on Android from the device-aware queue; always
     /// zero on desktop. Read by the keys tool to show live deflection.
     axes: [[f32; AXIS_COUNT]; PLAYERS],
@@ -182,7 +184,8 @@ impl InputState {
     }
 
     /// Latest deflection of `axis` for `player`, in -1..=1. Axis indices are
-    /// the [`AXIS_COUNT`] order (0 = X, 1 = Y, 2 = hat X, 3 = hat Y).
+    /// the [`AXIS_COUNT`] order (0 = X, 1 = Y, 2 = hat X, 3 = hat Y,
+    /// 4 = right-stick X, 5 = right-stick Y).
     pub fn axis(&self, player: usize, axis: usize) -> f32 {
         if player < PLAYERS && axis < AXIS_COUNT {
             self.axes[player][axis]
