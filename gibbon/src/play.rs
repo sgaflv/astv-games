@@ -87,6 +87,9 @@ pub struct Playing {
     /// The palette the sprites were quantized against; also the scene's
     /// palette, so framebuffer indices match the loaded sprites.
     palette: Palette,
+    /// The rendered theme WAV, kept so playback can restart after a pause or
+    /// when the window focus returns, without re-rendering.
+    music: Option<Vec<u8>>,
     sim_accumulator: f64,
     paused: bool,
     pause_requested: bool,
@@ -203,9 +206,12 @@ impl Playing {
         let wood = Self::load_sprites(&mut palette, WOOD_SPRITE, WOOD_FRAMES);
         let ladder = Self::load_sprites(&mut palette, LADDER_SPRITE, LADDER_FRAMES);
         let stone = Self::load_sprites(&mut palette, STONE_SPRITE, STONE_FRAMES);
-        // Start the looping theme; it plays for the lifetime of this scene and
-        // stops when the scene is dropped.
-        music_start();
+        // Render the theme once and start it looping; the WAV is kept so
+        // playback can restart after a pause or when focus returns.
+        let music = music_wav();
+        if let Some(wav) = &music {
+            engine::audio::play_loop(wav);
+        }
         Playing {
             game: None,
             fruit,
@@ -218,6 +224,7 @@ impl Playing {
             ladder,
             stone,
             palette,
+            music,
             sim_accumulator: 0.0,
             paused: false,
             pause_requested: false,
@@ -238,21 +245,29 @@ impl Default for Playing {
     }
 }
 
-/// Render `assets/music.mid` to a WAV and start it playing in a loop. Does
-/// nothing when the asset is missing or cannot be rendered, so the game runs
-/// fine without it.
-fn music_start() {
-    let Some(midi) = crate::assets::load(MUSIC) else {
-        return;
-    };
-    if let Some(wav) = engine::midi::render_wav(midi) {
-        engine::audio::play_loop(&wav);
+/// Render `assets/music.mid` to a WAV. Returns `None` when the asset is
+/// missing or cannot be rendered, so the game runs fine without it.
+fn music_wav() -> Option<Vec<u8>> {
+    crate::assets::load(MUSIC).and_then(engine::midi::render_wav)
+}
+
+impl Playing {
+    /// Start the looping theme, if one was rendered.
+    fn music_play(&self) {
+        if let Some(wav) = &self.music {
+            engine::audio::play_loop(wav);
+        }
+    }
+
+    /// Stop the looping theme.
+    fn music_stop(&self) {
+        engine::audio::stop();
     }
 }
 
 impl Drop for Playing {
     fn drop(&mut self) {
-        engine::audio::stop();
+        self.music_stop();
     }
 }
 
@@ -292,6 +307,11 @@ impl Scene for Playing {
         if self.pause_requested {
             self.pause_requested = false;
             self.paused = !self.paused;
+            if self.paused {
+                self.music_stop();
+            } else {
+                self.music_play();
+            }
         }
 
         if self.paused {
@@ -413,11 +433,13 @@ impl Scene for Playing {
 
     fn suspend(&mut self) {
         self.paused = true;
+        self.music_stop();
     }
 
     fn resume(&mut self) {
         self.paused = false;
         self.sim_accumulator = 0.0;
+        self.music_play();
     }
 }
 
