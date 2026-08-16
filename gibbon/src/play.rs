@@ -63,6 +63,10 @@ const STONE_FRAMES: usize = 1;
 
 const PAUSED_POS: (i32, i32) = (6, 16);
 
+/// The background theme: `assets/music.mid`, rendered to a looping WAV when
+/// the game starts.
+const MUSIC: &str = "music.mid";
+
 /// A selected game: owns the sprite sheets and the palette up front (created
 /// at selection time, so memory is spent only for the chosen game), then owns
 /// the `Game` once the player count is confirmed, plus the simulation
@@ -199,6 +203,9 @@ impl Playing {
         let wood = Self::load_sprites(&mut palette, WOOD_SPRITE, WOOD_FRAMES);
         let ladder = Self::load_sprites(&mut palette, LADDER_SPRITE, LADDER_FRAMES);
         let stone = Self::load_sprites(&mut palette, STONE_SPRITE, STONE_FRAMES);
+        // Start the looping theme; it plays for the lifetime of this scene and
+        // stops when the scene is dropped.
+        music_start();
         Playing {
             game: None,
             fruit,
@@ -228,6 +235,24 @@ impl Playing {
 impl Default for Playing {
     fn default() -> Playing {
         Playing::new()
+    }
+}
+
+/// Render `assets/music.mid` to a WAV and start it playing in a loop. Does
+/// nothing when the asset is missing or cannot be rendered, so the game runs
+/// fine without it.
+fn music_start() {
+    let Some(midi) = crate::assets::load(MUSIC) else {
+        return;
+    };
+    if let Some(wav) = engine::midi::render_wav(midi) {
+        engine::audio::play_loop(&wav);
+    }
+}
+
+impl Drop for Playing {
+    fn drop(&mut self) {
+        engine::audio::stop();
     }
 }
 

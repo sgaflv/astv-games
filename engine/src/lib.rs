@@ -1,7 +1,9 @@
 pub mod app;
+pub mod audio;
 pub mod color;
 pub mod font;
 pub mod input;
+pub mod midi;
 pub mod present;
 pub mod render;
 pub mod scene;

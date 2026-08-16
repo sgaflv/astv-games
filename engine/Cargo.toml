@@ -7,3 +7,4 @@ edition = "2024"
 miniquad = { version = "0.4", features = ["log-impl"] }
 font8x8 = "0.3.1"
 png = "0.18.1"
+quad-snd = "0.2.8"
