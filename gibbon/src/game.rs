@@ -252,6 +252,11 @@ pub struct Game {
     /// not fatal: the remaining gibbon can still clear the level and both
     /// come back on the next level. A life is only lost when both are caught.
     pub caught: [bool; 2],
+    /// A capture decided this tick (a guard landed on a gibbon's cell) but
+    /// only applied on the next sim tick: the guard's approach animation
+    /// plays out over the intervening SIM_FRAMES frames before the gibbon
+    /// actually disappears.
+    pending_catch: [bool; 2],
     pub guards: Vec<Actor>,
 
     /// The current command for player one. Movement latches: the gibbon
@@ -318,6 +323,7 @@ impl Game {
             gibbon: Actor::at(0, 0),
             gibbon2: Actor::at(0, 0),
             caught: [false; 2],
+            pending_catch: [false; 2],
             guards: Vec::new(),
             action: None,
             action2: None,
@@ -349,6 +355,7 @@ impl Game {
         self.gibbon = Actor::at(self.level.spawn.0 as i32, self.level.spawn.1 as i32);
         self.gibbon2 = Actor::at(self.level.spawn.0 as i32, self.level.spawn.1 as i32);
         self.caught = [false; 2];
+        self.pending_catch = [false; 2];
         let mut guards: Vec<Actor> = self
             .level
             .guard_spawns
@@ -574,6 +581,16 @@ impl Game {
     }
 
     fn tick_playing(&mut self) {
+        // A capture decided a tick ago (a guard finished walking onto the
+        // gibbon's cell) takes effect now: the guard's approach animation
+        // played out over the last SIM_FRAMES frames.
+        for p in 0..2 {
+            if self.pending_catch[p] {
+                self.caught[p] = true;
+            }
+        }
+        self.pending_catch = [false; 2];
+
         // Each player moves their gibbon; a caught gibbon is out for this
         // life and neither moves nor collects fruit.
         if !self.caught[0] {
@@ -606,9 +623,11 @@ impl Game {
             {
                 let target_cell = self.target_of(guard, dir);
                 guard.move_to(target_cell.x, target_cell.y, dir);
-                // A guard reaching its target's cell catches that gibbon.
+                // A guard walking onto its target's cell catches that gibbon:
+                // the capture is scheduled now and applied next tick, once the
+                // walk onto the cell has animated.
                 if guard.x == target.actor.x && guard.y == target.actor.y {
-                    self.caught[target.player] = true;
+                    self.pending_catch[target.player] = true;
                 }
             }
 
@@ -629,7 +648,9 @@ impl Game {
                 .iter()
                 .any(|g| g.x == gibbon.x && g.y == gibbon.y)
             {
-                self.caught[p] = true;
+                // Same delayed capture as a guard walking onto the gibbon:
+                // the collision is scheduled and applied on the next tick.
+                self.pending_catch[p] = true;
             }
         }
         if self.caught[0] && (self.players == 1 || self.caught[1]) {
@@ -730,19 +751,18 @@ impl Game {
         match action {
             Action::Up => {
                 // Climbing up needs a ladder or railing in the current cell.
-                // The cell above decides what is possible: a ladder rung is
-                // always climbable, a railing only when it continues as a
-                // ladder above (climbing up onto a bare railing is
-                // impossible), open air only from the top of a ladder (a bare
-                // railing is not enough to pull up into the air), and a solid
-                // cell (wood or brick) above always blocks the climb.
+                // The cell above decides what is possible: a ladder rung and
+                // a railing (bare or not) are always climbable, open air only
+                // from the top of a ladder (a bare railing is not enough to
+                // pull up into the air), and a solid cell (wood or brick)
+                // above always blocks the climb.
                 target.y >= 0
                     && matches!(current, Tile::Ladder | Tile::Railing)
                     && !target_tile.is_solid()
                     && if target_tile == Tile::Ladder {
                         true
                     } else if target_tile == Tile::Railing {
-                        self.tile(target.x, target.y - 1) == Tile::Ladder
+                        true
                     } else {
                         current == Tile::Ladder
                     }
@@ -2444,10 +2464,11 @@ mod tests {
              ==..................\n\
              ....................",
         )]);
-        // A guard one cell right of the gibbon walks onto it and catches it.
+        // A guard one cell right of the gibbon walks onto it and catches it
+        // once the walk animation has finished.
         game.guards = vec![Actor::at(1, 0)];
         game.game_state = State::Playing;
-        advance(&mut game, 1);
+        advance(&mut game, 2);
         assert_eq!(game.lives, LIVES - 1);
         assert_eq!(game.game_state, State::Dead);
         // After the death timer the gibbon is back at the spawn, guards reset.
@@ -2459,6 +2480,36 @@ mod tests {
     }
 
     #[test]
+    fn guard_capture_waits_for_the_walk_animation() {
+        // The capture is not applied the moment a guard steps onto the
+        // gibbon's cell: the guard first walks over the SIM_FRAMES-frame move,
+        // and only once the walk has finished does the gibbon get caught.
+        let mut game = game(vec![level(
+            "s..................g\n\
+             ==..................\n\
+             ....................",
+        )]);
+        game.guards = vec![Actor::at(1, 0)];
+        game.game_state = State::Playing;
+
+        // One tick: the guard has moved onto the gibbon's cell (its current
+        // cell, interpolated from its previous one), but the gibbon is still
+        // free while the walk plays out.
+        advance(&mut game, 1);
+        assert_eq!((game.guards[0].prev_x, game.guards[0].prev_y), (1, 0));
+        assert_eq!((game.guards[0].x, game.guards[0].y), (0, 0));
+        assert_eq!(game.caught, [false, false]);
+        assert_eq!(game.game_state, State::Playing);
+
+        // The next tick applies the capture: both gibbons share the spawn, so
+        // a life is lost.
+        advance(&mut game, 1);
+        assert_eq!(game.caught, [true, true]);
+        assert_eq!(game.lives, LIVES - 1);
+        assert_eq!(game.game_state, State::Dead);
+    }
+
+    #[test]
     fn losing_all_lives_ends_the_game() {
         let mut game = game(vec![level(
             "s...................g\n\
@@ -2467,7 +2518,7 @@ mod tests {
         )]);
         game.lives = 1;
         game.guards = vec![Actor::at(1, 0)];
-        advance(&mut game, 1);
+        advance(&mut game, 2);
         assert_eq!(game.game_state, State::GameOver);
         // After the game-over timeout the whole game restarts from level one
         // with full lives.
@@ -2529,15 +2580,17 @@ mod tests {
         game.gibbon = Actor::at(5, 0);
         game.gibbon2 = Actor::at(0, 0);
         game.guards = vec![Actor::at(1, 0)];
-        advance(&mut game, 1);
+        // The guard spends one tick walking onto the gibbon, the capture
+        // applies on the next.
+        advance(&mut game, 2);
         assert_eq!(game.caught, [false, true]);
         assert_eq!(game.lives, LIVES);
         assert_eq!(game.game_state, State::Playing);
         // The caught gibbon is out for this life and the guard now targets
-        // the free one.
+        // the free one, walking right toward it.
         advance(&mut game, 1);
         assert_eq!((game.gibbon2.x, game.gibbon2.y), (0, 0));
-        assert_eq!(game.guards[0].x, 1);
+        assert_eq!(game.guards[0].x, 2);
         assert_eq!(game.game_state, State::Playing);
     }
 
@@ -2551,7 +2604,7 @@ mod tests {
              ....................",
         )]);
         game.guards = vec![Actor::at(1, 0)];
-        advance(&mut game, 1);
+        advance(&mut game, 2);
         assert_eq!(game.caught, [true, true]);
         assert_eq!(game.lives, LIVES - 1);
         assert_eq!(game.game_state, State::Dead);
@@ -2621,7 +2674,7 @@ mod tests {
         )]);
         game.players = 1;
         game.guards = vec![Actor::at(1, 0)];
-        advance(&mut game, 1);
+        advance(&mut game, 2);
         assert_eq!(game.caught[0], true);
         assert_eq!(game.lives, LIVES - 1);
         assert_eq!(game.game_state, State::Dead);
