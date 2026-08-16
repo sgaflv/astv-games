@@ -2,7 +2,9 @@
 //! gibbon that runs across floors, climbs ladders, hangs from railings and
 //! digs through wooden floors to collect fruits. Two guards with different
 //! chase priorities try to catch it; a level is complete once every fruit is
-//! taken.
+//! taken. In a two-player game a caught gibbon is tied up in place instead of
+//! disappearing: it stays on the board until the other player walks onto its
+//! cell and frees it.
 
 pub use crate::level::{GRID_X, GRID_Y, Level, Tile};
 pub use crate::palette::{
@@ -31,7 +33,7 @@ const LIVES: i32 = 3;
 /// Sim ticks spent showing "LEVEL CLEAR" before the next level loads.
 const CLEAR_TICKS: usize = 10;
 
-/// Sim ticks spent showing the gibbon was caught before it respawns.
+/// Sim ticks spent paused on the dead state before the level restarts.
 const DEAD_TICKS: usize = 10;
 
 /// Sim ticks spent showing "GAME OVER" before the whole game restarts.
@@ -119,7 +121,7 @@ impl Actor {
 }
 
 /// A gibbon picked as a chase target, together with its player index so a
-/// guard that reaches it can mark exactly that gibbon as caught.
+/// guard that reaches it can mark exactly that gibbon as tied.
 #[derive(Clone, Copy)]
 struct Target {
     actor: Actor,
@@ -156,7 +158,8 @@ pub enum State {
     Playing,
     /// Every fruit is taken; the timer counts down before the next level.
     Cleared,
-    /// The gibbon was caught; the timer counts down before respawning.
+    /// A life was lost (both gibbons tied up, or a lone gibbon caught); the
+    /// timer counts down before respawning.
     Dead,
     /// All lives are gone.
     GameOver,
@@ -225,6 +228,11 @@ pub struct GameSprites<'a> {
     /// The second player's gibbon (green).
     pub gibbon2: CharacterSprites<'a>,
     pub guard: CharacterSprites<'a>,
+    /// Player one's tied pose: the gibbon wrapped in rope, drawn in place
+    /// while a guard has tied it up.
+    pub tied: &'a RleSprite,
+    /// Player two's tied pose, recolored to match the green gibbon.
+    pub tied2: &'a RleSprite,
     /// Wood wall sheet: frame 0 is the intact wall, the last frame the
     /// completely destroyed wood left behind in the dug cell.
     pub wood: &'a [RleSprite],
@@ -242,21 +250,26 @@ pub struct Game {
     levels: Vec<Level>,
 
     pub level: Level,
-    /// Player one's gibbon. When caught it stops moving and is not drawn
-    /// until the level is cleared or both gibbons are caught and a life is
-    /// lost.
+    /// Player one's gibbon. When tied it stays put (wrapped in rope) until
+    /// the other player walks onto its cell and frees it.
     pub gibbon: Actor,
     /// Player two's gibbon, with its own latched command.
     pub gibbon2: Actor,
-    /// Whether each gibbon was caught by a guard this life. A single catch is
-    /// not fatal: the remaining gibbon can still clear the level and both
-    /// come back on the next level. A life is only lost when both are caught.
-    pub caught: [bool; 2],
+    /// Whether each gibbon is currently tied up. A tied gibbon stays on the
+    /// board but neither moves nor collects fruit; it is drawn in the tied
+    /// pose. Only the other player on the same cell can free it. A life is
+    /// lost when both gibbons are tied (or a lone gibbon is tied).
+    pub tied: [bool; 2],
     /// A capture decided this tick (a guard landed on a gibbon's cell) but
     /// only applied on the next sim tick: the guard's approach animation
-    /// plays out over the intervening SIM_FRAMES frames before the gibbon
-    /// actually disappears.
-    pending_catch: [bool; 2],
+    /// plays out over the intervening SIM_FRAMES frames before the gibbon is
+    /// actually tied.
+    pending_tie: [bool; 2],
+    /// An untie decided this tick (the other player walked onto a tied
+    /// gibbon's cell) but only applied on the next sim tick, once that walk
+    /// has animated: the tied gibbon is freed the tick after the player
+    /// arrives.
+    pending_untie: [bool; 2],
     pub guards: Vec<Actor>,
 
     /// The current command for player one. Movement latches: the gibbon
@@ -280,7 +293,7 @@ pub struct Game {
 
     /// How many players are playing (1 or 2). With one player only player
     /// one's gibbon exists: the second gibbon does not move, collect fruit or
-    /// get drawn, and being caught costs a life directly.
+    /// get drawn, and being tied costs a life directly.
     pub players: usize,
 
     pub lives: i32,
@@ -322,8 +335,9 @@ impl Game {
             level: Level::default(),
             gibbon: Actor::at(0, 0),
             gibbon2: Actor::at(0, 0),
-            caught: [false; 2],
-            pending_catch: [false; 2],
+            tied: [false; 2],
+            pending_tie: [false; 2],
+            pending_untie: [false; 2],
             guards: Vec::new(),
             action: None,
             action2: None,
@@ -354,8 +368,9 @@ impl Game {
         self.level = self.levels[index].clone();
         self.gibbon = Actor::at(self.level.spawn.0 as i32, self.level.spawn.1 as i32);
         self.gibbon2 = Actor::at(self.level.spawn.0 as i32, self.level.spawn.1 as i32);
-        self.caught = [false; 2];
-        self.pending_catch = [false; 2];
+        self.tied = [false; 2];
+        self.pending_tie = [false; 2];
+        self.pending_untie = [false; 2];
         let mut guards: Vec<Actor> = self
             .level
             .guard_spawns
@@ -454,13 +469,16 @@ impl Game {
 
         for &(_, x, y) in &regrown {
             // A gibbon standing on the cell when the wood closes back in is
-            // crushed: this is an instant death, unlike a guard catch, so it
-            // always costs a life.
-            if self.game_state == State::Playing
-                && ((self.gibbon.x == x && self.gibbon.y == y)
-                    || (self.players == 2 && self.gibbon2.x == x && self.gibbon2.y == y))
-            {
-                self.lose_life();
+            // crushed. In a two-player game the crushed gibbon reappears at
+            // the spawn point tied (a partner can free it); a lone gibbon
+            // instead loses a life, like being caught by a guard.
+            if self.game_state == State::Playing {
+                if self.gibbon.x == x && self.gibbon.y == y {
+                    self.crush_gibbon(0);
+                }
+                if self.players == 2 && self.gibbon2.x == x && self.gibbon2.y == y {
+                    self.crush_gibbon(1);
+                }
             }
             for i in 0..self.guards.len() {
                 if self.guards[i].x == x && self.guards[i].y == y {
@@ -470,6 +488,20 @@ impl Game {
             }
             self.level.set_tile(x as usize, y as usize, Tile::Wood);
         }
+    }
+
+    /// A gibbon crushed by regrowing wood. In a two-player game it reappears
+    /// at the spawn point, tied: a partner can walk over and free it, so the
+    /// crush costs no life. A lone gibbon has nobody to free it and instead
+    /// loses a life, like a guard capture.
+    fn crush_gibbon(&mut self, player: usize) {
+        self.tied[player] = true;
+        if self.players == 1 {
+            self.lose_life();
+            return;
+        }
+        let (sx, sy) = (self.level.spawn.0 as i32, self.level.spawn.1 as i32);
+        *self.gibbon_mut(player) = Actor::at(sx, sy);
     }
 
     /// Advance one fixed simulation step.
@@ -533,18 +565,18 @@ impl Game {
             // like movement, so it resolves back to no action.
             Some(Action::DigLeft) => {
                 if !self.perform_dig(-1, gibbon) {
-                    self.step_gravity(&mut gibbon);
+                    self.step_gravity(&mut gibbon, false);
                 }
                 action = None;
             }
             Some(Action::DigRight) => {
                 if !self.perform_dig(1, gibbon) {
-                    self.step_gravity(&mut gibbon);
+                    self.step_gravity(&mut gibbon, false);
                 }
                 action = None;
             }
             Some(cmd) => {
-                let falling = self.step_gravity(&mut gibbon);
+                let falling = self.step_gravity(&mut gibbon, false);
 
                 if !falling {
                     let target = self.target_of(gibbon, cmd);
@@ -573,35 +605,63 @@ impl Game {
                 }
             }
             None => {
-                self.step_gravity(&mut gibbon);
+                self.step_gravity(&mut gibbon, false);
             }
         }
 
         (gibbon, action)
     }
 
+    /// Advance a tied gibbon: it cannot move on its own, but gravity still
+    /// applies. A railing gives a tied gibbon no grip, so it slips through
+    /// it, and a wooden floor dug away beneath it lets it fall too; while
+    /// falling it is drawn in the tied pose. Its latched command is kept, so
+    /// it is carried out the moment the gibbon is freed.
+    fn step_tied_gibbon(&mut self, mut gibbon: Actor) -> Actor {
+        gibbon.settle();
+        self.step_gravity(&mut gibbon, true);
+        gibbon
+    }
+
     fn tick_playing(&mut self) {
         // A capture decided a tick ago (a guard finished walking onto the
         // gibbon's cell) takes effect now: the guard's approach animation
-        // played out over the last SIM_FRAMES frames.
+        // played out over the last SIM_FRAMES frames. The gibbon settles in
+        // place so it stands still on the cell it was caught on. An untie
+        // decided the same way (the other player finished walking onto a tied
+        // gibbon's cell) frees that gibbon now.
         for p in 0..2 {
-            if self.pending_catch[p] {
-                self.caught[p] = true;
+            if self.pending_tie[p] {
+                self.tied[p] = true;
+                self.gibbon_mut(p).settle();
             }
         }
-        self.pending_catch = [false; 2];
+        self.pending_tie = [false; 2];
+        for p in 0..2 {
+            if self.pending_untie[p] {
+                self.tied[p] = false;
+            }
+        }
+        self.pending_untie = [false; 2];
 
-        // Each player moves their gibbon; a caught gibbon is out for this
-        // life and neither moves nor collects fruit.
-        if !self.caught[0] {
+        // Each player moves their gibbon. A tied gibbon cannot move on its
+        // own but is still subject to gravity (and keeps its latched command,
+        // so the moment it is untied it carries that command out).
+        if self.tied[0] {
+            self.gibbon = self.step_tied_gibbon(self.gibbon);
+        } else {
             let (gibbon, action) = self.step_gibbon(self.gibbon, self.action);
             self.gibbon = gibbon;
             self.action = action;
         }
-        if self.players == 2 && !self.caught[1] {
-            let (gibbon, action) = self.step_gibbon(self.gibbon2, self.action2);
-            self.gibbon2 = gibbon;
-            self.action2 = action;
+        if self.players == 2 {
+            if self.tied[1] {
+                self.gibbon2 = self.step_tied_gibbon(self.gibbon2);
+            } else {
+                let (gibbon, action) = self.step_gibbon(self.gibbon2, self.action2);
+                self.gibbon2 = gibbon;
+                self.action2 = action;
+            }
         }
 
         self.collect_fruit();
@@ -615,7 +675,7 @@ impl Game {
             let mut guard = self.guards[i];
             guard.settle();
 
-            let falling = self.step_gravity(&mut guard);
+            let falling = self.step_gravity(&mut guard, false);
 
             if !falling
                 && let Some(target) = self.closest_gibbon(guard)
@@ -623,37 +683,53 @@ impl Game {
             {
                 let target_cell = self.target_of(guard, dir);
                 guard.move_to(target_cell.x, target_cell.y, dir);
-                // A guard walking onto its target's cell catches that gibbon:
-                // the capture is scheduled now and applied next tick, once the
-                // walk onto the cell has animated.
+                // A guard walking onto its target's cell ties that gibbon:
+                // the capture is scheduled now and applied next tick, once
+                // the walk onto the cell has animated.
                 if guard.x == target.actor.x && guard.y == target.actor.y {
-                    self.pending_catch[target.player] = true;
+                    self.pending_tie[target.player] = true;
                 }
             }
 
             self.guards[i] = guard;
         }
 
-        // A guard that lands on a gibbon (e.g. one dropping from a ladder)
-        // catches it. With two players a life is only lost when both gibbons
-        // are caught; with one player the single gibbon costs a life on its
-        // own.
+        // A guard that lands on a free gibbon (e.g. one dropping from a
+        // ladder) ties it. A tied gibbon is only freed when the other player
+        // is on the same cell: like a capture, the untie is scheduled now and
+        // applied on the next tick, once the walk onto the cell has animated.
         for p in 0..2 {
-            if !self.gibbon_active(p) || self.caught[p] {
+            if !self.gibbon_active(p) {
                 continue;
             }
             let gibbon = self.gibbon_of(p);
-            if self
-                .guards
-                .iter()
-                .any(|g| g.x == gibbon.x && g.y == gibbon.y)
-            {
-                // Same delayed capture as a guard walking onto the gibbon:
-                // the collision is scheduled and applied on the next tick.
-                self.pending_catch[p] = true;
+            if !self.tied[p] {
+                if self
+                    .guards
+                    .iter()
+                    .any(|g| g.x == gibbon.x && g.y == gibbon.y)
+                {
+                    // Same delayed capture as a guard walking onto the
+                    // gibbon: the collision is scheduled and applied on the
+                    // next tick.
+                    self.pending_tie[p] = true;
+                }
+            } else {
+                // The other player on the tied gibbon's cell frees it.
+                let partner = 1 - p;
+                if !self.tied[partner] {
+                    let other = self.gibbon_of(partner);
+                    if other.x == gibbon.x && other.y == gibbon.y {
+                        self.pending_untie[p] = true;
+                    }
+                }
             }
         }
-        if self.caught[0] && (self.players == 1 || self.caught[1]) {
+        // With two players a life is only lost when both gibbons are tied; a
+        // tied gibbon can always be freed by the partner, so one alone never
+        // ends the run. With one player there is nobody to free the gibbon,
+        // so being tied costs a life on its own.
+        if self.tied[0] && (self.players == 1 || self.tied[1]) {
             self.lose_life();
         }
     }
@@ -672,7 +748,7 @@ impl Game {
         }
     }
 
-    /// Respawn the gibbon (and reset the guards) after being caught.
+    /// Respawn the gibbon (and reset the guards) after a life is lost.
     fn respawn(&mut self) {
         self.start_level(self.level_index);
         self.lives = self.lives.max(1);
@@ -686,9 +762,11 @@ impl Game {
 
     fn collect_fruit(&mut self) {
         for p in 0..2 {
-            if !self.gibbon_active(p) || self.caught[p] {
+            if !self.gibbon_active(p) {
                 continue;
             }
+            // A tied gibbon cannot move but still takes a fruit it stands on,
+            // e.g. one it falls onto.
             let gibbon = self.gibbon_of(p);
             let (x, y) = (gibbon.x as usize, gibbon.y as usize);
             if x < GRID_X && y < GRID_Y && self.level.tile(x, y) == Tile::Fruit {
@@ -784,29 +862,39 @@ impl Game {
     /// ladder directly below (standing on a ladder's top), or a ladder or
     /// railing in the current cell (hanging from a railing or standing in a
     /// ladder). Nothing above provides support: the gibbon does not hang from
-    /// a ladder or railing in the cell above it, so it starts falling.
-    fn supported(&self, x: i32, y: i32) -> bool {
+    /// a ladder or railing in the cell above it, so it starts falling. A tied
+    /// gibbon has no grip, so a railing in the current cell does not support
+    /// it and it slips through; ladders still hold it in place.
+    fn supported(&self, x: i32, y: i32, tied: bool) -> bool {
         if self.tile(x, y + 1).is_solid() {
             return true;
         }
-
-        matches!(self.tile(x, y), Tile::Ladder | Tile::Railing)
-            || self.tile(x, y + 1) == Tile::Ladder
+        if tied {
+            self.tile(x, y) == Tile::Ladder || self.tile(x, y + 1) == Tile::Ladder
+        } else {
+            matches!(self.tile(x, y), Tile::Ladder | Tile::Railing)
+                || self.tile(x, y + 1) == Tile::Ladder
+        }
     }
 
     /// Apply one cell of gravity when the actor is unsupported. Returns
-    /// whether the actor moved (fell).
-    fn step_gravity(&self, actor: &mut Actor) -> bool {
+    /// whether the actor moved (fell). `tied` mirrors [`Game::supported`]: a
+    /// tied gibbon falls through railings instead of hanging from them.
+    fn step_gravity(&self, actor: &mut Actor, tied: bool) -> bool {
         // Falling off the bottom row wraps around to the top of the board.
         if actor.y >= GRID_Y as i32 - 1 {
-            if !self.supported(actor.prev_x, actor.prev_y) && !self.supported(actor.x, actor.y) {
+            if !self.supported(actor.prev_x, actor.prev_y, tied)
+                && !self.supported(actor.x, actor.y, tied)
+            {
                 actor.move_to(actor.x, 0, Action::Down);
                 return true;
             }
             return false; // resting on the bottom row
         }
 
-        if !self.supported(actor.prev_x, actor.prev_y) && !self.supported(actor.x, actor.y) {
+        if !self.supported(actor.prev_x, actor.prev_y, tied)
+            && !self.supported(actor.x, actor.y, tied)
+        {
             actor.move_to(actor.x, actor.y + 1, Action::Down);
             return true;
         }
@@ -867,9 +955,18 @@ impl Game {
         }
     }
 
-    /// The closest gibbon that is not yet caught, with its player index, so
+    /// The gibbon for a player index, for writing.
+    fn gibbon_mut(&mut self, player: usize) -> &mut Actor {
+        if player == 0 {
+            &mut self.gibbon
+        } else {
+            &mut self.gibbon2
+        }
+    }
+
+    /// The closest gibbon that is not yet tied, with its player index, so
     /// both guards can be told which target to chase. `None` when both are
-    /// caught (the game is about to lose a life anyway).
+    /// tied (the game is about to lose a life anyway).
     fn closest_gibbon(&self, guard: Actor) -> Option<Target> {
         let targets = [
             Target {
@@ -883,7 +980,7 @@ impl Game {
         ];
         targets
             .into_iter()
-            .filter(|t| self.gibbon_active(t.player) && !self.caught[t.player])
+            .filter(|t| self.gibbon_active(t.player) && !self.tied[t.player])
             .min_by_key(|t| (t.actor.x - guard.x).abs() + (t.actor.y - guard.y).abs())
     }
 
@@ -917,12 +1014,42 @@ impl Game {
         }
 
         if self.game_state != State::Dead {
-            if !self.caught[0] {
-                self.draw_actor(r, self.gibbon, frame, &sprites.gibbon);
+            self.draw_gibbon(r, self.gibbon, self.tied[0], frame, &sprites.gibbon, sprites.tied);
+            if self.players == 2 {
+                self.draw_gibbon(
+                    r,
+                    self.gibbon2,
+                    self.tied[1],
+                    frame,
+                    &sprites.gibbon2,
+                    sprites.tied2,
+                );
             }
-            if self.players == 2 && !self.caught[1] {
-                self.draw_actor(r, self.gibbon2, frame, &sprites.gibbon2);
+        }
+    }
+
+    /// Draw one gibbon: the tied pose while it is tied up (drawn in place,
+    /// or sliding down while it falls), otherwise the animated character.
+    fn draw_gibbon(
+        &self,
+        r: &mut impl Renderer,
+        actor: Actor,
+        tied: bool,
+        frame: usize,
+        sprites: &CharacterSprites,
+        tied_sprite: &RleSprite,
+    ) {
+        if tied {
+            let (px, py) = interpolate(actor, frame);
+            tied_sprite.draw(r, px, py);
+            // Wrapping from the bottom row to the top: while the first copy
+            // slides out past the bottom edge, draw it again at the top of
+            // the board, shifted by one board height.
+            if actor.prev_y == GRID_Y as i32 - 1 && actor.y == 0 {
+                tied_sprite.draw(r, px, py - BOARD_PY);
             }
+        } else {
+            self.draw_actor(r, actor, frame, sprites);
         }
     }
 
@@ -1812,9 +1939,9 @@ mod tests {
     }
 
     #[test]
-    fn regrowing_wood_crushes_a_gibbon_standing_in_it() {
-        // A gibbon trapped in a dug cell when the wood regrows loses a life
-        // and the level restarts (like being caught by a guard).
+    fn regrowing_wood_respawns_a_tied_gibbon_at_the_spawn() {
+        // A gibbon crushed by regrowing wood reappears at the spawn point
+        // tied (a partner can walk over and free it), so no life is lost.
         let mut game = game(vec![level(
             ".s.................g\n\
              ==..................=\n\
@@ -1824,14 +1951,42 @@ mod tests {
         advance(&mut game, 1);
         assert_eq!(game.level.tile(0, 1), Tile::Empty);
 
-        // Move the timer to just before regrow, then drop the gibbon into the
-        // hole (it is supported by the floor row below it).
+        // Move the timer to just before regrow, then drop gibbon one into the
+        // hole (it is supported by the floor row below it). Gibbon two stands
+        // away from the spawn so it cannot untie the crushed gibbon here.
         advance(&mut game, DIG_TICKS - 1);
         game.gibbon = Actor::at(0, 1);
+        game.gibbon2 = Actor::at(5, 0);
 
         let lives = game.lives;
         // One tick ends the countdown and starts the wood rising back; the
         // following tick completes the restoration and crushes the gibbon.
+        advance(&mut game, 2);
+        assert_eq!(game.lives, lives);
+        assert_eq!(game.game_state, State::Playing);
+        assert_eq!(game.tied, [true, false]);
+        assert_eq!(game.gibbon, Actor::at(1, 0));
+        assert_eq!(game.level.tile(0, 1), Tile::Wood);
+    }
+
+    #[test]
+    fn regrowing_wood_crushes_a_lone_gibbon() {
+        // A single gibbon has no partner to free it: being crushed by
+        // regrowing wood loses a life, like being caught by a guard.
+        let mut game = game(vec![level(
+            ".s.................g\n\
+             ==..................=\n\
+             ====================",
+        )]);
+        game.players = 1;
+        game.set_action(Some(Action::DigLeft));
+        advance(&mut game, 1);
+        assert_eq!(game.level.tile(0, 1), Tile::Empty);
+
+        advance(&mut game, DIG_TICKS - 1);
+        game.gibbon = Actor::at(0, 1);
+
+        let lives = game.lives;
         advance(&mut game, 2);
         assert_eq!(game.lives, lives - 1);
         assert_eq!(game.game_state, State::Dead);
@@ -2054,8 +2209,21 @@ mod tests {
         )
     }
 
+    /// The tied pose decoded from the embedded art, as the playing scene loads
+    /// it.
+    fn tied_sprite() -> RleSprite {
+        let data = crate::assets::load("gibbon_tied.png").expect("tied sprite embedded");
+        let mut palette = Palette::default();
+        SpriteSheet::from_png(data, &mut palette, CELL as usize, CELL as usize, 1)
+            .expect("tied sprite decodes")
+            .to_rle()
+            .expect("tied sprite encodes")[0]
+            .clone()
+    }
+
     fn draw_game(game: &Game, wood: &[RleSprite], ladder: &[RleSprite]) -> Framebuffer {
         let mut fb = Framebuffer::new();
+        let tied = tied_sprite();
         game.draw(
             &mut fb,
             0,
@@ -2064,6 +2232,8 @@ mod tests {
                 gibbon: gibbon_sheets().sprites(),
                 gibbon2: gibbon_sheets().sprites(),
                 guard: gibbon_sheets().sprites(),
+                tied: &tied,
+                tied2: &tied,
                 wood,
                 ladder,
                 stone: &[],
@@ -2154,6 +2324,7 @@ mod tests {
         game.gibbon = Actor::at(19, 11); // off-screen
         game.guards = vec![];
         let mut fb = Framebuffer::new();
+        let tied = tied_sprite();
         game.draw(
             &mut fb,
             0,
@@ -2162,6 +2333,8 @@ mod tests {
                 gibbon: gibbon_sheets().sprites(),
                 gibbon2: gibbon_sheets().sprites(),
                 guard: gibbon_sheets().sprites(),
+                tied: &tied,
+                tied2: &tied,
                 wood: &[],
                 ladder: &[],
                 stone: &stone,
@@ -2191,6 +2364,7 @@ mod tests {
         game.gibbon2 = Actor::at(2, 0);
         game.guards = vec![];
         let mut fb = Framebuffer::new();
+        let tied = tied_sprite();
         game.draw(
             &mut fb,
             0,
@@ -2199,6 +2373,8 @@ mod tests {
                 gibbon: orange.sprites(),
                 gibbon2: green.sprites(),
                 guard: gibbon_sheets().sprites(),
+                tied: &tied,
+                tied2: &tied,
                 wood: &[],
                 ladder: &[],
                 stone: &[],
@@ -2464,8 +2640,9 @@ mod tests {
              ==..................\n\
              ....................",
         )]);
-        // A guard one cell right of the gibbon walks onto it and catches it
-        // once the walk animation has finished.
+        // A guard one cell right of the shared spawn ties both gibbons once
+        // the walk animation has finished: with nobody left free to untie
+        // them, a life is lost.
         game.guards = vec![Actor::at(1, 0)];
         game.game_state = State::Playing;
         advance(&mut game, 2);
@@ -2483,7 +2660,7 @@ mod tests {
     fn guard_capture_waits_for_the_walk_animation() {
         // The capture is not applied the moment a guard steps onto the
         // gibbon's cell: the guard first walks over the SIM_FRAMES-frame move,
-        // and only once the walk has finished does the gibbon get caught.
+        // and only once the walk has finished does the gibbon get tied.
         let mut game = game(vec![level(
             "s..................g\n\
              ==..................\n\
@@ -2498,13 +2675,13 @@ mod tests {
         advance(&mut game, 1);
         assert_eq!((game.guards[0].prev_x, game.guards[0].prev_y), (1, 0));
         assert_eq!((game.guards[0].x, game.guards[0].y), (0, 0));
-        assert_eq!(game.caught, [false, false]);
+        assert_eq!(game.tied, [false, false]);
         assert_eq!(game.game_state, State::Playing);
 
         // The next tick applies the capture: both gibbons share the spawn, so
         // a life is lost.
         advance(&mut game, 1);
-        assert_eq!(game.caught, [true, true]);
+        assert_eq!(game.tied, [true, true]);
         assert_eq!(game.lives, LIVES - 1);
         assert_eq!(game.game_state, State::Dead);
     }
@@ -2564,13 +2741,13 @@ mod tests {
         advance(&mut game, 1);
         // Distance to gibbon1 is 3, to gibbon2 is 4: it walks right.
         assert_eq!(game.guards[0].x, 6);
-        assert_eq!(game.caught, [false, false]);
+        assert_eq!(game.tied, [false, false]);
     }
 
     #[test]
-    fn a_single_catch_continues_without_losing_a_life() {
-        // The guard reaches the nearer gibbon (player two) and catches it,
-        // but the game keeps running: no life is lost and the guard turns to
+    fn a_single_tie_continues_without_losing_a_life() {
+        // The guard reaches the nearer gibbon (player two) and ties it, but
+        // the game keeps running: no life is lost and the guard turns to
         // chase the remaining gibbon.
         let mut game = game(vec![level(
             "s..................g\n\
@@ -2583,11 +2760,11 @@ mod tests {
         // The guard spends one tick walking onto the gibbon, the capture
         // applies on the next.
         advance(&mut game, 2);
-        assert_eq!(game.caught, [false, true]);
+        assert_eq!(game.tied, [false, true]);
         assert_eq!(game.lives, LIVES);
         assert_eq!(game.game_state, State::Playing);
-        // The caught gibbon is out for this life and the guard now targets
-        // the free one, walking right toward it.
+        // The tied gibbon stays put on its cell (drawn in the tied pose) and
+        // the guard now targets the free one, walking right toward it.
         advance(&mut game, 1);
         assert_eq!((game.gibbon2.x, game.gibbon2.y), (0, 0));
         assert_eq!(game.guards[0].x, 2);
@@ -2595,9 +2772,216 @@ mod tests {
     }
 
     #[test]
-    fn both_gibbons_caught_costs_a_life() {
-        // Both gibbons share the spawn, so a guard that reaches it catches
-        // both at once and a life is lost.
+    fn a_tied_gibbon_is_freed_by_a_partner_on_the_same_cell() {
+        // Like a guard capture, the untie only applies once the partner's
+        // walk onto the tied gibbon's cell has animated: the gibbon is freed
+        // one tick after the partner arrives.
+        let mut game = game(vec![level(
+            "s..................g\n\
+             ====================\n\
+             ....................",
+        )]);
+        game.gibbon = Actor::at(5, 0);
+        game.gibbon2 = Actor::at(4, 0);
+        game.guards = vec![Actor::at(19, 0)];
+        game.tied = [true, false];
+        game.set_action2(Some(Action::Right));
+
+        // The partner walks onto the tied gibbon's cell; the untie is only
+        // scheduled this tick, not yet applied.
+        advance(&mut game, 1);
+        assert_eq!(game.tied, [true, false]);
+        assert_eq!((game.gibbon2.x, game.gibbon2.y), (5, 0));
+
+        // The next tick frees the tied gibbon.
+        advance(&mut game, 1);
+        assert_eq!(game.tied, [false, false]);
+    }
+
+    #[test]
+    fn a_freed_gibbon_fulfills_its_queued_action() {
+        // The tied gibbon keeps its latched command, so the moment the
+        // partner frees it it carries that command out.
+        let mut game = game(vec![level(
+            "s..................g\n\
+             ====================\n\
+             ....................",
+        )]);
+        game.gibbon = Actor::at(5, 0);
+        game.gibbon2 = Actor::at(4, 0);
+        game.guards = vec![Actor::at(19, 0)];
+        game.tied = [true, false];
+        game.set_action(Some(Action::Right));
+        game.set_action2(Some(Action::Right));
+
+        // While tied the gibbon keeps its latched command but stays put.
+        advance(&mut game, 1);
+        assert_eq!((game.gibbon.x, game.gibbon.y), (5, 0));
+        assert_eq!(game.tied, [true, false]);
+
+        // The partner arrives; the next tick frees the gibbon and it runs
+        // right.
+        advance(&mut game, 1);
+        assert_eq!(game.tied, [false, false]);
+        assert_eq!((game.gibbon.x, game.gibbon.y), (6, 0));
+    }
+
+    #[test]
+    fn a_tied_gibbon_collects_fruit_it_stands_on() {
+        // A tied gibbon cannot move away, but it still takes a fruit that
+        // ends up under it, e.g. one it falls onto.
+        let mut game = game(vec![level(
+            "s@.................g\n\
+             ====================\n\
+             ....................",
+        )]);
+        game.gibbon = Actor::at(1, 0);
+        game.gibbon2 = Actor::at(5, 0);
+        game.guards = vec![];
+        game.tied = [true, false];
+        advance(&mut game, 1);
+        assert_eq!(game.level.tile(1, 0), Tile::Empty);
+        assert_eq!(game.fruits_left, 0);
+        assert_eq!(game.game_state, State::Cleared);
+    }
+
+    #[test]
+    fn a_tied_gibbon_falls_through_a_railing() {
+        // A free gibbon hangs from a railing; a tied one has no grip and
+        // slips straight through it.
+        let mut game = game(vec![level(
+            "s---.................g\n\
+             ....................\n\
+             ....................\n\
+             ....................\n\
+             ....................\n\
+             ....................\n\
+             ....................\n\
+             ....................\n\
+             ....................\n\
+             ....................\n\
+             ====================",
+        )]);
+        game.gibbon = Actor::at(2, 0); // hanging from the railing
+        game.guards = vec![];
+        game.tied = [true, false];
+        advance(&mut game, 1);
+        assert_eq!((game.gibbon.x, game.gibbon.y), (2, 1));
+        // It keeps falling until the floor row catches it, still tied.
+        advance(&mut game, GRID_Y);
+        assert_eq!(game.gibbon.y, GRID_Y as i32 - 2);
+        assert_eq!(game.tied, [true, false]);
+    }
+
+    #[test]
+    fn a_tied_gibbon_falls_when_its_floor_is_dug_away() {
+        // A tied gibbon cannot move away, so when the other player digs the
+        // wooden floor out from under it, it falls through the fresh hole.
+        let mut game = game(vec![level(
+            "s..................g\n\
+             ====..................\n\
+             ====================",
+        )]);
+        game.gibbon = Actor::at(2, 0); // standing on the wood at (2, 1)
+        game.gibbon2 = Actor::at(3, 0);
+        game.guards = vec![];
+        game.tied = [true, false];
+        game.set_action2(Some(Action::DigLeft));
+
+        // The partner digs the cell under the tied gibbon; the gibbon does
+        // not fall until the next tick (it moved before the dig).
+        advance(&mut game, 1);
+        assert_eq!(game.level.tile(2, 1), Tile::Empty);
+        assert_eq!((game.gibbon.x, game.gibbon.y), (2, 0));
+        // Now it drops into the hole, resting on the floor below.
+        advance(&mut game, 1);
+        assert_eq!((game.gibbon.x, game.gibbon.y), (2, 1));
+    }
+
+    #[test]
+    fn a_falling_tied_gibbon_is_drawn_in_the_tied_pose() {
+        // While a tied gibbon falls it is drawn wrapped in rope at its moving
+        // position, not in the climbing pose.
+        let mut game = game(vec![level(
+            "s..................g\n\
+             ....................",
+        )]);
+        game.gibbon = Actor {
+            x: 2,
+            y: 1,
+            prev_x: 2,
+            prev_y: 0,
+            facing: 1,
+        };
+        game.gibbon2 = Actor::at(19, 11); // off-screen
+        game.guards = vec![];
+        game.tied = [true, false];
+
+        let tied = tied_sprite();
+        let mut fb = Framebuffer::new();
+        game.draw(
+            &mut fb,
+            SIM_FRAMES,
+            &GameSprites {
+                fruit: &[],
+                gibbon: gibbon_sheets().sprites(),
+                gibbon2: gibbon_sheets().sprites(),
+                guard: gibbon_sheets().sprites(),
+                tied: &tied,
+                tied2: &tied,
+                wood: &[],
+                ladder: &[],
+                stone: &[],
+            },
+        );
+
+        let mut expected = Framebuffer::new();
+        let (px, py) = cell_screen(2, 1);
+        tied.draw(&mut expected, px, py);
+        assert_eq!(cell_pixels(&fb, 2, 1), cell_pixels(&expected, 2, 1));
+    }
+
+    #[test]
+    fn a_tied_gibbon_is_drawn_wrapped_in_rope() {
+        // A tied gibbon stays visible on the board, drawn in the tied pose
+        // instead of disappearing.
+        let mut game = game(vec![level(
+            "s..................g\n\
+             ....................",
+        )]);
+        game.gibbon = Actor::at(2, 0);
+        game.gibbon2 = Actor::at(19, 11); // off-screen
+        game.guards = vec![];
+        game.tied = [true, false];
+
+        let tied = tied_sprite();
+        let mut fb = Framebuffer::new();
+        game.draw(
+            &mut fb,
+            0,
+            &GameSprites {
+                fruit: &[],
+                gibbon: gibbon_sheets().sprites(),
+                gibbon2: gibbon_sheets().sprites(),
+                guard: gibbon_sheets().sprites(),
+                tied: &tied,
+                tied2: &tied,
+                wood: &[],
+                ladder: &[],
+                stone: &[],
+            },
+        );
+
+        let mut expected = Framebuffer::new();
+        let (px, py) = cell_screen(2, 0);
+        tied.draw(&mut expected, px, py);
+        assert_eq!(cell_pixels(&fb, 2, 0), cell_pixels(&expected, 2, 0));
+    }
+
+    #[test]
+    fn both_gibbons_tied_costs_a_life() {
+        // Both gibbons share the spawn, so a guard that reaches it ties both
+        // at once and a life is lost.
         let mut game = game(vec![level(
             "s..................g\n\
              ==..................\n\
@@ -2605,14 +2989,14 @@ mod tests {
         )]);
         game.guards = vec![Actor::at(1, 0)];
         advance(&mut game, 2);
-        assert_eq!(game.caught, [true, true]);
+        assert_eq!(game.tied, [true, true]);
         assert_eq!(game.lives, LIVES - 1);
         assert_eq!(game.game_state, State::Dead);
     }
 
     #[test]
     fn the_remaining_gibbon_can_still_clear_the_level() {
-        // With player one already caught, player two collects the last fruit:
+        // With player one already tied, player two collects the last fruit:
         // the level clears and the next level starts with both gibbons free.
         let a = level(
             "s@..................g\n\
@@ -2625,14 +3009,14 @@ mod tests {
              ....................",
         );
         let mut game = game(vec![a, b]);
-        game.caught = [true, false];
+        game.tied = [true, false];
         game.set_action2(Some(Action::Right));
         advance(&mut game, 1);
         assert_eq!(game.game_state, State::Cleared);
         assert_eq!(game.lives, LIVES);
         advance(&mut game, CLEAR_TICKS);
         assert_eq!(game.level_index, 1);
-        assert_eq!(game.caught, [false, false]);
+        assert_eq!(game.tied, [false, false]);
         assert_eq!(game.gibbon, Actor::at(0, 0));
         assert_eq!(game.gibbon2, Actor::at(0, 0));
         assert_eq!(game.game_state, State::Playing);
@@ -2664,8 +3048,8 @@ mod tests {
     }
 
     #[test]
-    fn one_player_catch_costs_a_life_directly() {
-        // A single gibbon has no partner to share the life with: being caught
+    fn one_player_tie_costs_a_life_directly() {
+        // A single gibbon has no partner to share the life with: being tied
         // loses a life right away, like the classic single-player game.
         let mut game = game(vec![level(
             "s..................g\n\
@@ -2675,7 +3059,7 @@ mod tests {
         game.players = 1;
         game.guards = vec![Actor::at(1, 0)];
         advance(&mut game, 2);
-        assert_eq!(game.caught[0], true);
+        assert!(game.tied[0]);
         assert_eq!(game.lives, LIVES - 1);
         assert_eq!(game.game_state, State::Dead);
     }

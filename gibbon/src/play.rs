@@ -35,6 +35,12 @@ const FRUIT_FRAMES: usize = 12;
 const GIBBON_SPRITE: &str = "gibbon.png";
 const WALK_SPRITE: &str = "gibbon_move_right.png";
 
+// The tied pose: a single frame of the gibbon wrapped in rope, drawn in
+// place while a guard has tied it up. Player two uses the same art recolored
+// green (see `player2_color`).
+const TIED_SPRITE: &str = "gibbon_tied.png";
+const TIED_FRAMES: usize = 1;
+
 // The guard's art follows the same split as the gibbon: guard.png holds only
 // the standing pose and guard_move_right.png the walking animation facing
 // right, flipped for the left-facing frames.
@@ -67,6 +73,10 @@ pub struct Playing {
     gibbon: CharacterSheets,
     gibbon2: CharacterSheets,
     guard: CharacterSheets,
+    /// Player one's tied pose (gibbon wrapped in rope).
+    tied: Vec<RleSprite>,
+    /// Player two's tied pose, recolored green.
+    tied2: Vec<RleSprite>,
     wood: Vec<RleSprite>,
     ladder: Vec<RleSprite>,
     stone: Vec<RleSprite>,
@@ -181,6 +191,11 @@ impl Playing {
         let gibbon = Self::load_gibbon(&mut palette, None);
         let gibbon2 = Self::load_gibbon(&mut palette, Some(player2_color));
         let guard = Self::load_guard(&mut palette, GUARD_SPRITE);
+        let tied = Self::load_sprites(&mut palette, TIED_SPRITE, TIED_FRAMES);
+        let tied2 = Self::load_sheet(&mut palette, TIED_SPRITE, TIED_FRAMES, false)
+            .recolored(&palette, player2_color)
+            .to_rle()
+            .expect("tied frame must encode to RLE");
         let wood = Self::load_sprites(&mut palette, WOOD_SPRITE, WOOD_FRAMES);
         let ladder = Self::load_sprites(&mut palette, LADDER_SPRITE, LADDER_FRAMES);
         let stone = Self::load_sprites(&mut palette, STONE_SPRITE, STONE_FRAMES);
@@ -190,6 +205,8 @@ impl Playing {
             gibbon,
             gibbon2,
             guard,
+            tied,
+            tied2,
             wood,
             ladder,
             stone,
@@ -331,6 +348,8 @@ impl Scene for Playing {
             gibbon: self.gibbon.sprites(),
             gibbon2: self.gibbon2.sprites(),
             guard: self.guard.sprites(),
+            tied: self.tied.first().expect("a tied frame is always loaded"),
+            tied2: self.tied2.first().expect("a tied frame is always loaded"),
             wood: &self.wood,
             ladder: &self.ladder,
             stone: &self.stone,
