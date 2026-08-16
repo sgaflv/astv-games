@@ -1013,18 +1013,19 @@ impl Game {
             self.draw_actor(r, *guard, frame, &sprites.guard);
         }
 
-        if self.game_state != State::Dead {
-            self.draw_gibbon(r, self.gibbon, self.tied[0], frame, &sprites.gibbon, sprites.tied);
-            if self.players == 2 {
-                self.draw_gibbon(
-                    r,
-                    self.gibbon2,
-                    self.tied[1],
-                    frame,
-                    &sprites.gibbon2,
-                    sprites.tied2,
-                );
-            }
+        // Gibbons are drawn in every state: a tied gibbon stays wrapped in
+        // rope on screen while a lost life is paused, and when the game is
+        // over both tied gibbons remain visible.
+        self.draw_gibbon(r, self.gibbon, self.tied[0], frame, &sprites.gibbon, sprites.tied);
+        if self.players == 2 {
+            self.draw_gibbon(
+                r,
+                self.gibbon2,
+                self.tied[1],
+                frame,
+                &sprites.gibbon2,
+                sprites.tied2,
+            );
         }
     }
 
@@ -2972,6 +2973,59 @@ mod tests {
             },
         );
 
+        let mut expected = Framebuffer::new();
+        let (px, py) = cell_screen(2, 0);
+        tied.draw(&mut expected, px, py);
+        assert_eq!(cell_pixels(&fb, 2, 0), cell_pixels(&expected, 2, 0));
+    }
+
+    #[test]
+    fn both_tied_gibbons_stay_visible_during_the_dead_state() {
+        // When both gibbons are tied and a life is lost, they remain visible
+        // on screen, wrapped in rope, through the lost-life pause (the same
+        // view as when the game is over).
+        let mut game = game(vec![level(
+            "s..................g\n\
+             ....................",
+        )]);
+        game.gibbon = Actor::at(2, 0);
+        game.gibbon2 = Actor::at(5, 0);
+        game.guards = vec![];
+        game.tied = [true, true];
+        game.game_state = State::Dead;
+        game.state_timer = DEAD_TICKS;
+
+        let fb = draw_game(&game, &[], &[]);
+        let tied = tied_sprite();
+        let mut expected = Framebuffer::new();
+        let (px0, py0) = cell_screen(2, 0);
+        tied.draw(&mut expected, px0, py0);
+        assert_eq!(cell_pixels(&fb, 2, 0), cell_pixels(&expected, 2, 0));
+
+        let mut expected = Framebuffer::new();
+        let (px1, py1) = cell_screen(5, 0);
+        tied.draw(&mut expected, px1, py1);
+        assert_eq!(cell_pixels(&fb, 5, 0), cell_pixels(&expected, 5, 0));
+    }
+
+    #[test]
+    fn a_single_tied_gibbon_stays_visible_during_the_lost_life_state() {
+        // With one player a tied gibbon costs a life; it stays visible,
+        // wrapped in rope, through the lost-life pause.
+        let mut game = game(vec![level(
+            "s..................g\n\
+             ....................",
+        )]);
+        game.players = 1;
+        game.gibbon = Actor::at(2, 0);
+        game.gibbon2 = Actor::at(19, 11); // off-screen
+        game.guards = vec![];
+        game.tied = [true, false];
+        game.game_state = State::Dead;
+        game.state_timer = DEAD_TICKS;
+
+        let fb = draw_game(&game, &[], &[]);
+        let tied = tied_sprite();
         let mut expected = Framebuffer::new();
         let (px, py) = cell_screen(2, 0);
         tied.draw(&mut expected, px, py);
