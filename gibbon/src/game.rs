@@ -772,13 +772,23 @@ impl Game {
             if x < GRID_X && y < GRID_Y && self.level.tile(x, y) == Tile::Fruit {
                 self.level.set_tile(x, y, Tile::Empty);
                 self.fruits_left = self.fruits_left.saturating_sub(1);
-                // A level clears only once every fruit is actually taken, so
-                // fruitless test levels never auto-complete.
-                if self.fruits_left == 0 {
-                    self.game_state = State::Cleared;
-                    self.state_timer = CLEAR_TICKS;
-                }
             }
+        }
+        self.check_clear();
+    }
+
+    /// A level clears once every fruit is actually taken (fruitless test
+    /// levels never auto-complete) and no player is tied up: a tied gibbon
+    /// cannot finish the level, so collecting the last fruit only counts once
+    /// it has been freed again.
+    fn check_clear(&mut self) {
+        if self.level.fruits > 0
+            && self.fruits_left == 0
+            && !self.tied[0]
+            && (self.players == 1 || !self.tied[1])
+        {
+            self.game_state = State::Cleared;
+            self.state_timer = CLEAR_TICKS;
         }
     }
 
@@ -2830,7 +2840,8 @@ mod tests {
     #[test]
     fn a_tied_gibbon_collects_fruit_it_stands_on() {
         // A tied gibbon cannot move away, but it still takes a fruit that
-        // ends up under it, e.g. one it falls onto.
+        // ends up under it, e.g. one it falls onto. Collecting the last
+        // fruit is not enough to clear while it is still tied.
         let mut game = game(vec![level(
             "s@.................g\n\
              ====================\n\
@@ -2843,6 +2854,10 @@ mod tests {
         advance(&mut game, 1);
         assert_eq!(game.level.tile(1, 0), Tile::Empty);
         assert_eq!(game.fruits_left, 0);
+        assert_eq!(game.game_state, State::Playing);
+        // The partner frees the tied gibbon; only now does the level clear.
+        game.set_action2(Some(Action::Left));
+        advance(&mut game, 6);
         assert_eq!(game.game_state, State::Cleared);
     }
 
@@ -3049,9 +3064,9 @@ mod tests {
     }
 
     #[test]
-    fn the_remaining_gibbon_can_still_clear_the_level() {
-        // With player one already tied, player two collects the last fruit:
-        // the level clears and the next level starts with both gibbons free.
+    fn a_level_only_clears_once_no_gibbon_is_tied() {
+        // Player one is tied while player two collects the last fruit: the
+        // level does not clear until the tied gibbon is freed again.
         let a = level(
             "s@..................g\n\
              ==..................\n\
@@ -3066,8 +3081,15 @@ mod tests {
         game.tied = [true, false];
         game.set_action2(Some(Action::Right));
         advance(&mut game, 1);
-        assert_eq!(game.game_state, State::Cleared);
+        // Every fruit is gone, but the tied gibbon holds the level open.
+        assert_eq!(game.fruits_left, 0);
+        assert_eq!(game.game_state, State::Playing);
         assert_eq!(game.lives, LIVES);
+        // The partner walks back onto the tied gibbon's cell and frees it;
+        // only now does the level clear.
+        game.set_action2(Some(Action::Left));
+        advance(&mut game, 2);
+        assert_eq!(game.game_state, State::Cleared);
         advance(&mut game, CLEAR_TICKS);
         assert_eq!(game.level_index, 1);
         assert_eq!(game.tied, [false, false]);
