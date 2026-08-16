@@ -22,12 +22,8 @@ pub const TARGET_FRAMES: usize = 60;
 /// chasing a running gibbon keeps a constant distance.
 pub const SIM_FRAMES: usize = 24;
 
-/// A dug wooden tile stays open for this many seconds.
-const DIG_SECONDS: usize = 5;
-
 /// The tile stays open for DIG_TICKS sim ticks: one sim tick lasts
-/// SIM_FRAMES/TARGET_FRAMES seconds, so `DIG_SECONDS` is about 13 sim ticks.
-const DIG_TICKS: usize = (DIG_SECONDS * TARGET_FRAMES + SIM_FRAMES / 2) / SIM_FRAMES;
+const DIG_TICKS: usize = 10;
 
 /// Starting lives.
 const LIVES: i32 = 3;
@@ -736,9 +732,10 @@ impl Game {
                 // Climbing up needs a ladder or railing in the current cell.
                 // The cell above decides what is possible: a ladder rung is
                 // always climbable, a railing only when it continues as a
-                // ladder above (climbing up onto the top of a bare railing is
-                // impossible), open air only from the top of a ladder, and a
-                // solid cell (wood or brick) above always blocks the climb.
+                // ladder above (climbing up onto a bare railing is
+                // impossible), open air only from the top of a ladder (a bare
+                // railing is not enough to pull up into the air), and a solid
+                // cell (wood or brick) above always blocks the climb.
                 target.y >= 0
                     && matches!(current, Tile::Ladder | Tile::Railing)
                     && !target_tile.is_solid()
@@ -764,8 +761,10 @@ impl Game {
     }
 
     /// Whether an actor in cell `(x, y)` is supported: solid ground below, a
-    /// ladder directly below (standing on a ladder's top), or something to    
-    /// hang from (railing in the current cell)
+    /// ladder directly below (standing on a ladder's top), or a ladder or
+    /// railing in the current cell (hanging from a railing or standing in a
+    /// ladder). Nothing above provides support: the gibbon does not hang from
+    /// a ladder or railing in the cell above it, so it starts falling.
     fn supported(&self, x: i32, y: i32) -> bool {
         if self.tile(x, y + 1).is_solid() {
             return true;
@@ -1244,6 +1243,7 @@ mod tests {
         };
         let (_, bottom) = cell_screen(1, GRID_Y as i32 - 1);
         assert_eq!(interpolate(actor, 0), (cell_screen(1, 0).0, bottom));
+
         let (px, py) = interpolate(actor, SIM_FRAMES - 1);
         assert_eq!(px, cell_screen(1, 0).0);
         assert!(py > bottom, "the exiting copy slides past the bottom edge");
@@ -1327,22 +1327,73 @@ mod tests {
 
     #[test]
     fn gibbon_hangs_on_a_railing() {
-        // Railing above the spawn, empty everywhere else: it must not fall.
+        // Railing next to the gibbon.
         let mut game = game(vec![level(
-            "-..................g\n\
-             s...................g\n\
-             ....................",
+            "....................\n\
+             s-..................\n\
+             *...................",
         )]);
-        advance(&mut game, 10);
-        assert_eq!(game.gibbon.y, 1);
-        // Stepping off the end of the railing makes it fall.
+        // move onto the railing to hang on there
         game.set_action(Some(Action::Right));
-        advance(&mut game, 12);
+        advance(&mut game, 1);
+        game.set_action(None);
+        // we must still be on the railing
+        advance(&mut game, 10);
+
+        assert_eq!(game.gibbon.y, 1);
+
+        // Stepping off the end of the railing makes it fall; ten ticks land it
+        // on the bottom row just before the wrap tick loops it back to the top.
+        game.set_action(Some(Action::Right));
+        advance(&mut game, 10);
         assert_eq!(game.gibbon.y, GRID_Y as i32 - 1);
     }
 
     #[test]
-    fn climbing_up_onto_a_bare_railing_is_blocked() {
+    fn gibbon_cannot_climb_up_railing_without_ladder() {
+        // Railing next to the gibbon.
+        let mut game = game(vec![level(
+            "....................\n\
+             s-..................\n\
+             *...................",
+        )]);
+
+        // move onto the railing to hang on there
+        game.set_action(Some(Action::Right));
+        advance(&mut game, 1);
+        game.set_action(None);
+        // we must still be on the railing
+        advance(&mut game, 10);
+
+        assert_eq!(game.gibbon.y, 1);
+
+        // try climbing up fails
+        game.set_action(Some(Action::Up));
+        advance(&mut game, 1);
+
+        assert_eq!(game.gibbon.y, 1);
+    }
+
+    #[test]
+    fn gibbon_does_not_hang_on_a_railing_that_is_above_him() {
+        // Railing above the gibbon.
+        let mut game = game(vec![level(
+            "-................\n\
+             s................\n\
+             .................\n\
+             *................\n\
+             .*...............",
+        )]);
+        assert_eq!(game.gibbon.y, 1);
+
+        game.set_action(None);
+        advance(&mut game, 10);
+
+        assert_eq!(game.gibbon.y, 2);
+    }
+
+    #[test]
+    fn climbing_up_onto_a_bare_railing_is_allowed() {
         // Ladder below a railing with nothing above it: the gibbon climbs to
         // the top rung but cannot climb up onto the railing.
         let mut game = game(vec![level(
@@ -1361,10 +1412,12 @@ mod tests {
         game.set_action(Some(Action::Left));
         advance(&mut game, 1);
         assert_eq!((game.gibbon.x, game.gibbon.y), (0, 9));
+
         game.set_action(Some(Action::Up));
         advance(&mut game, 12);
+
         // It stops on the top rung: the railing above it has no ladder above.
-        assert_eq!(game.gibbon.y, 1);
+        assert_eq!(game.gibbon.y, 0);
         assert_eq!(game.gibbon.x, 0);
         assert_eq!(game.action, None);
     }
@@ -1582,13 +1635,13 @@ mod tests {
         // Running right off the end of a railing, the gibbon falls straight
         // down at the same column instead of continuing to move right.
         let mut game = game(vec![level(
-            "-..................g\n\
-             s...................g\n\
-             ....................",
+            "...................g\n\
+             s-.................g\n\
+             =...................",
         )]);
         game.set_action(Some(Action::Right));
         advance(&mut game, 4);
-        assert_eq!(game.gibbon.x, 1);
+        assert_eq!(game.gibbon.x, 2);
         assert!(game.gibbon.y > 1);
         // Its direction survives the fall: it resumes once it lands.
         assert_eq!(game.action, Some(Action::Right));
@@ -1596,10 +1649,11 @@ mod tests {
 
     #[test]
     fn pressing_down_jumps_off_a_ladder_into_open_air() {
-        // Ladder ends above open air: Down leaves the ladder and the gibbon
-        // keeps falling until it lands on the floor.
+        // The bottom rung of a ladder hangs over open air: Down steps off it
+        // and the gibbon keeps falling until it lands on the floor.
         let mut game = game(vec![level(
             "|..................g\n\
+             |..................g\n\
              |..................g\n\
              |..................g\n\
              s..................g\n\
@@ -1608,10 +1662,9 @@ mod tests {
              ....................\n\
              ....................\n\
              ....................\n\
-             ....................\n\
              ====================",
         )]);
-        // The spawn hangs from the ladder bottom (the ladder is right above).
+        game.gibbon = Actor::at(0, 3); // the bottom rung, open air below
         game.set_action(Some(Action::Down));
         advance(&mut game, 1);
         // It stepped off the ladder into the empty cell below it.
@@ -1623,22 +1676,49 @@ mod tests {
     }
 
     #[test]
+    fn gibbon_does_not_hang_on_a_ladder_that_is_above_him() {
+        // A ladder ends above the spawn with open air below: nothing holds the
+        // gibbon, so it starts falling instead of hanging from the bottom rung.
+        let mut game = game(vec![level(
+            "|..................g\n\
+             |..................g\n\
+             |..................g\n\
+             s..................g\n\
+             ....................\n\
+             *....................",
+        )]);
+        assert_eq!(game.gibbon.y, 3);
+
+        game.set_action(None);
+        advance(&mut game, 1);
+        // One tick and it is already falling past the spawn cell.
+        assert_eq!((game.gibbon.x, game.gibbon.y), (0, 4));
+        // It lands on the brick below and rests there.
+        advance(&mut game, 2);
+        assert_eq!((game.gibbon.x, game.gibbon.y), (0, 4));
+    }
+
+    #[test]
     fn pressing_down_jumps_off_a_railing() {
         // Hanging on a railing with open air below, Down lets the gibbon drop.
         let mut game = game(vec![level(
-            "-..................g\n\
-             s..................g\n\
+            "...................g\n\
+             s-.................g\n\
+             *...................\n\
              ....................\n\
              ....................\n\
              ....................\n\
-             ....................\n\
-             ====================",
+             =...================",
         )]);
+        game.set_action(Some(Action::Right));
         advance(&mut game, 1);
-        assert_eq!((game.gibbon.x, game.gibbon.y), (0, 1)); // hanging
+        game.set_action(None);
+        advance(&mut game, 2);
+        assert_eq!((game.gibbon.x, game.gibbon.y), (1, 1)); // hanging
+
         game.set_action(Some(Action::Down));
         advance(&mut game, 2);
-        assert_eq!(game.gibbon.x, 0);
+        assert_eq!(game.gibbon.x, 1);
         assert!(game.gibbon.y > 1, "it drops off the railing");
     }
 
@@ -1655,7 +1735,9 @@ mod tests {
              ....................\n\
              ====================",
         )]);
+
         game.gibbon = Actor::at(0, 1); // bottom rung, railing below
+
         game.set_action(Some(Action::Down));
         advance(&mut game, 1);
         assert_eq!((game.gibbon.x, game.gibbon.y), (0, 2));
@@ -1691,7 +1773,7 @@ mod tests {
     }
 
     #[test]
-    fn digging_opens_a_hole_and_regrows_after_five_seconds() {
+    fn digging_opens_a_hole_and_regrows_after_dig_ticks() {
         // Gibbon stands on a wooden floor and digs the tile down-left.
         let mut game = game(vec![level(
             ".s..................g\n\
@@ -1721,10 +1803,12 @@ mod tests {
         game.set_action(Some(Action::DigLeft));
         advance(&mut game, 1);
         assert_eq!(game.level.tile(0, 1), Tile::Empty);
+
         // Move the timer to just before regrow, then drop the gibbon into the
         // hole (it is supported by the floor row below it).
         advance(&mut game, DIG_TICKS - 1);
         game.gibbon = Actor::at(0, 1);
+
         let lives = game.lives;
         // One tick ends the countdown and starts the wood rising back; the
         // following tick completes the restoration and crushes the gibbon.

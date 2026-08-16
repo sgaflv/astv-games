@@ -180,12 +180,10 @@ mod tests {
 
     /// Supported like `Game::supported`: solid ground below, a ladder directly
     /// below (standing on a ladder's top), or a ladder or railing in the
-    /// current cell or the one above.
+    /// current cell. Nothing above provides support: the gibbon does not hang
+    /// from a ladder or railing in the cell above it, so it starts falling.
     fn supported(tiles: &[Tile], x: i32, y: i32) -> bool {
-        is_solid(tiles, x, y + 1)
-            || is_lr(tiles, x, y)
-            || is_lr(tiles, x, y - 1)
-            || is_ladder(tiles, x, y + 1)
+        is_solid(tiles, x, y + 1) || is_lr(tiles, x, y) || is_ladder(tiles, x, y + 1)
     }
 
     /// Drop one cell at a time until supported, wrapping around to the top
@@ -223,20 +221,21 @@ mod tests {
         visited.insert((sx, sy));
         let mut q = VecDeque::from([(sx, sy)]);
         while let Some((x, y)) = q.pop_front() {
-            // Climb up: the current cell must be a ladder or railing, and the
-            // cell above decides what is possible — a ladder rung is always
+            // Climb up: the current cell must be a ladder or railing. The cell
+            // above decides what is possible: a ladder rung is always
             // climbable, a railing only when it continues as a ladder above
-            // (climbing onto the top of a bare railing is impossible), and
-            // open air only from the top of a ladder.
+            // (climbing up onto a bare railing is impossible), open air from a
+            // ladder's top rung or from a railing (pulling up over the bar),
+            // and a solid cell (wood or brick) above always blocks the climb.
             if y > 0 {
                 let above = tile_at(tiles, x, y - 1);
                 let can_climb = match above {
                     Some(Tile::Ladder) => is_lr(tiles, x, y),
                     Some(Tile::Railing) => {
-                        is_lr(tiles, x, y) && tile_at(tiles, x, y - 2) == Some(Tile::Ladder)
+                        is_lr(tiles, x, y) && is_ladder(tiles, x, y - 2)
                     }
                     Some(t) if t.is_solid() => false,
-                    _ => is_ladder(tiles, x, y),
+                    _ => is_lr(tiles, x, y),
                 };
                 if can_climb {
                     let nxt = (x, y - 1);
