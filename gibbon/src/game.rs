@@ -67,6 +67,9 @@ pub const HANG_FRAMES: usize = 3;
 /// hanging locomotion animation facing right. The left-facing frames are the
 /// same sprites flipped horizontally at load time.
 pub const HANG_WALK_FRAMES: usize = 2;
+/// Sprite frame count of the climbing sheet (gibbon_climb.png): the climbing
+/// animation used when the actor moves vertically on a ladder or railing.
+pub const CLIMB_FRAMES: usize = 2;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Action {
@@ -187,9 +190,9 @@ pub struct CharacterSprites<'a> {
     pub walk_right: &'a [RleSprite],
     /// Walking animation frames, facing left.
     pub walk_left: &'a [RleSprite],
-    /// Climbing pose; falls back to the standing pose when absent (the gibbon
-    /// sheets hold no climbing art).
-    pub climb: Option<&'a RleSprite>,
+    /// Climbing animation frames; falls back to the standing pose when
+    /// empty (e.g. the guard sheets hold no climbing art).
+    pub climb: &'a [RleSprite],
     /// Hanging look poses: neutral (0), looking right (1), looking left (2).
     pub hang: &'a [RleSprite],
     /// Hanging look poses, left-facing.
@@ -234,7 +237,7 @@ impl CharacterSheets {
             stand_left: &self.stand_left,
             walk_right: &self.walk_right,
             walk_left: &self.walk_left,
-            climb: self.climb.first(),
+            climb: &self.climb,
             hang: &self.hang,
             hang_left: &self.hang_left,
             hang_walk_right: &self.hang_walk_right,
@@ -912,11 +915,30 @@ impl Game {
     }
 
     /// Whether the actor is hanging from a railing: the current cell has a
-    /// railing and there is no solid floor below it. When both a floor and a
-    /// railing are present the gibbon stands on the floor instead.
+    /// railing and there is no solid floor below it. The previous position
+    /// must also have been supported (not falling through empty air onto
+    /// the railing).
     fn actor_is_hanging(&self, actor: Actor) -> bool {
         self.tile(actor.x, actor.y) == Tile::Railing
             && !self.tile(actor.x, actor.y + 1).is_solid()
+            && self.tile(actor.x, actor.y + 1) != Tile::Ladder
+            && self.supported(actor.prev_x, actor.prev_y, false)
+    }
+
+    /// Whether the actor is climbing: moving vertically with a ladder or
+    /// railing at either the current or previous position. Falling from
+    /// empty air onto a railing is excluded (that shows the neutral stand).
+    fn actor_is_climbing(&self, actor: Actor) -> bool {
+        let cur = matches!(self.tile(actor.x, actor.y), Tile::Ladder | Tile::Railing);
+        let prev = matches!(
+            self.tile(actor.prev_x, actor.prev_y),
+            Tile::Ladder | Tile::Railing
+        );
+        // Any ladder involvement is climbing. Railing only when the other end
+        // also has support — falling from empty air onto a railing is not.
+        cur && prev
+            || self.tile(actor.x, actor.y) == Tile::Ladder
+            || self.tile(actor.prev_x, actor.prev_y) == Tile::Ladder
     }
 
     /// Apply one cell of gravity when the actor is unsupported. Returns
@@ -1052,7 +1074,7 @@ impl Game {
         self.draw_fruits(r, sprites.fruit);
 
         for guard in &self.guards {
-            self.draw_actor(r, *guard, frame, &sprites.guard, self.tick, false);
+            self.draw_actor(r, *guard, frame, &sprites.guard, self.tick, self.actor_is_hanging(*guard), self.actor_is_climbing(*guard));
         }
 
         // Gibbons are drawn in every state: a tied gibbon stays wrapped in
@@ -1093,7 +1115,8 @@ impl Game {
             }
         } else {
             let hanging = self.actor_is_hanging(actor);
-            self.draw_actor(r, actor, frame, sprites, self.tick, hanging);
+            let climbing = self.actor_is_climbing(actor);
+            self.draw_actor(r, actor, frame, sprites, self.tick, hanging, climbing);
         }
     }
 
@@ -1179,9 +1202,10 @@ impl Game {
         sprites: &CharacterSprites,
         tick: usize,
         is_hanging: bool,
+        is_climbing: bool,
     ) {
         let (px, py) = interpolate(actor, frame);
-        let sprite = actor_sprite(actor, frame, sprites, tick, is_hanging);
+        let sprite = actor_sprite(actor, frame, sprites, tick, is_hanging, is_climbing);
         sprite.draw(r, px, py);
         // Wrapping from the bottom row to the top: while the first copy
         // slides out past the bottom edge, draw it again at the top of
@@ -1193,21 +1217,27 @@ impl Game {
 }
 
 /// The sprite to draw for `actor` at interpolation frame `frame`: the
-/// climbing pose during vertical movement, a walking-animation frame while
+/// climbing animation during deliberate vertical movement (on a ladder or
+/// railing), the idle pose while falling, a walking-animation frame while
 /// walking horizontally, and the standing (or hanging) pose when resting.
-/// The `tick` drives the idle gaze animation and `is_hanging` selects
-/// between the standing and hanging sprite sheets.
+/// The `tick` drives the idle gaze animation, `is_hanging` selects between
+/// the standing and hanging sprite sheets, and `is_climbing` is true when
+/// the actor is on a ladder or railing (as opposed to falling through
+/// empty air).
 fn actor_sprite<'a>(
     actor: Actor,
     frame: usize,
     sprites: &'a CharacterSprites<'a>,
     tick: usize,
     is_hanging: bool,
+    is_climbing: bool,
 ) -> &'a RleSprite {
     if actor.prev_y != actor.y {
-        sprites
-            .climb
-            .unwrap_or_else(|| idle_sprite(actor, sprites, 0, is_hanging))
+        if is_climbing && !sprites.climb.is_empty() {
+            &sprites.climb[walk_frame(frame, sprites.climb.len())]
+        } else {
+            idle_sprite(actor, sprites, 0, is_hanging)
+        }
     } else if actor.prev_x != actor.x {
         let frames = if is_hanging {
             if actor.facing < 0 {

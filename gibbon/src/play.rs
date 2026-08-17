@@ -3,8 +3,8 @@
 //! clear / game over overlays.
 
 use crate::game::{
-    Action, CharacterSheets, Game, GameSprites, HANG_FRAMES, HANG_WALK_FRAMES, STAND_FRAMES, State,
-    TARGET_FRAMES, WALK_FRAMES,
+    Action, CharacterSheets, Game, GameSprites, CLIMB_FRAMES, HANG_FRAMES, HANG_WALK_FRAMES,
+    STAND_FRAMES, State, TARGET_FRAMES, WALK_FRAMES,
 };
 use crate::palette::{self, BG, HUD, PLAYER2_BODY, PLAYER2_DARK, PLAYER2_FACE};
 use engine::color::{Color, Palette};
@@ -38,6 +38,7 @@ const FRUIT_FRAMES: usize = 12;
 const GIBBON_SPRITE: &str = "gibbon.png";
 const HANG_SPRITE: &str = "gibbon_hang.png";
 const HANG_WALK_SPRITE: &str = "gibbon_hang_right.png";
+const CLIMB_SPRITE: &str = "gibbon_climb.png";
 const WALK_SPRITE: &str = "gibbon_move_right.png";
 
 // The tied pose: a single frame of the gibbon wrapped in rope, drawn in
@@ -50,6 +51,9 @@ const TIED_FRAMES: usize = 1;
 // the standing pose and guard_move_right.png the walking animation facing
 // right, flipped for the left-facing frames.
 const GUARD_SPRITE: &str = "guard.png";
+const GUARD_HANG_SPRITE: &str = "guard_hang.png";
+const GUARD_HANG_WALK_SPRITE: &str = "guard_hang_right.png";
+const GUARD_CLIMB_SPRITE: &str = "guard_climb.png";
 const GUARD_WALK_SPRITE: &str = "guard_move_right.png";
 
 // The wood wall sheet: 12 frames of 24x24, the first the intact wall and the
@@ -170,7 +174,7 @@ impl Playing {
             stand_left: decode(GIBBON_SPRITE, STAND_FRAMES, true),
             walk_right: decode(WALK_SPRITE, WALK_FRAMES, false),
             walk_left: decode(WALK_SPRITE, WALK_FRAMES, true),
-            climb: Vec::new(),
+            climb: decode(CLIMB_SPRITE, CLIMB_FRAMES, false),
             hang: decode(HANG_SPRITE, HANG_FRAMES, false),
             hang_left: decode(HANG_SPRITE, HANG_FRAMES, true),
             hang_walk_right: decode(HANG_WALK_SPRITE, HANG_WALK_FRAMES, false),
@@ -196,16 +200,32 @@ impl Playing {
         let walk_left = Self::load_sheet(palette, GUARD_WALK_SPRITE, WALK_FRAMES, true)
             .to_rle()
             .expect("sprite frames must encode to RLE");
+        let hang = Self::load_sheet(palette, GUARD_HANG_SPRITE, STAND_FRAMES, false)
+            .to_rle()
+            .expect("sprite frames must encode to RLE");
+        let hang_left = Self::load_sheet(palette, GUARD_HANG_SPRITE, STAND_FRAMES, true)
+            .to_rle()
+            .expect("sprite frames must encode to RLE");
+        let hang_walk_right =
+            Self::load_sheet(palette, GUARD_HANG_WALK_SPRITE, HANG_WALK_FRAMES, false)
+                .to_rle()
+                .expect("sprite frames must encode to RLE");
+        let hang_walk_left =
+            Self::load_sheet(palette, GUARD_HANG_WALK_SPRITE, HANG_WALK_FRAMES, true)
+                .to_rle()
+                .expect("sprite frames must encode to RLE");
         CharacterSheets {
             stand,
             stand_left,
             walk_right,
             walk_left,
-            climb: Vec::new(),
-            hang: Vec::new(),
-            hang_left: Vec::new(),
-            hang_walk_right: Vec::new(),
-            hang_walk_left: Vec::new(),
+            climb: Self::load_sheet(palette, GUARD_CLIMB_SPRITE, CLIMB_FRAMES, false)
+                .to_rle()
+                .expect("sprite frames must encode to RLE"),
+            hang,
+            hang_left,
+            hang_walk_right,
+            hang_walk_left,
         }
     }
 
