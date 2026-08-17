@@ -3,7 +3,8 @@
 //! clear / game over overlays.
 
 use crate::game::{
-    Action, CharacterSheets, Game, GameSprites, STAND_FRAMES, State, TARGET_FRAMES, WALK_FRAMES,
+    Action, CharacterSheets, Game, GameSprites, HANG_FRAMES, HANG_WALK_FRAMES, STAND_FRAMES, State,
+    TARGET_FRAMES, WALK_FRAMES,
 };
 use crate::palette::{self, BG, HUD, PLAYER2_BODY, PLAYER2_DARK, PLAYER2_FACE};
 use engine::color::{Color, Palette};
@@ -27,12 +28,16 @@ const FRAME_W: usize = 24;
 const FRAME_H: usize = 24;
 const FRUIT_FRAMES: usize = 12;
 
-// The gibbon's art is split across two sheets: gibbon.png holds only the
-// standing pose and gibbon_move_right.png the walking animation facing right.
-// The left-facing frames are the same walking sprites flipped horizontally at
-// load time (see SpriteSheet::flipped_horizontal). Player two reuses the same
-// art recolored green at load time (see `player2_color`).
+// The gibbon's art is split across three sheets: gibbon.png holds the
+// standing look poses (neutral, looking right, looking left),
+// gibbon_hang.png holds the same poses for hanging from a railing, and
+// gibbon_move_right.png the walking animation facing right. The left-facing
+// frames are the same sprites flipped horizontally at load time (see
+// SpriteSheet::flipped_horizontal). Player two reuses the same art
+// recolored green at load time (see `player2_color`).
 const GIBBON_SPRITE: &str = "gibbon.png";
+const HANG_SPRITE: &str = "gibbon_hang.png";
+const HANG_WALK_SPRITE: &str = "gibbon_hang_right.png";
 const WALK_SPRITE: &str = "gibbon_move_right.png";
 
 // The tied pose: a single frame of the gibbon wrapped in rope, drawn in
@@ -61,6 +66,10 @@ const LADDER_FRAMES: usize = 1;
 const STONE_SPRITE: &str = "stone.png";
 const STONE_FRAMES: usize = 1;
 
+// The railing sheet: one 24x24 frame drawn for every railing tile.
+const RAILING_SPRITE: &str = "railing.png";
+const RAILING_FRAMES: usize = 1;
+
 const PAUSED_POS: (i32, i32) = (6, 16);
 
 /// The background theme: `assets/music.mid`, rendered to a looping WAV when
@@ -84,6 +93,7 @@ pub struct Playing {
     wood: Vec<RleSprite>,
     ladder: Vec<RleSprite>,
     stone: Vec<RleSprite>,
+    railing: Vec<RleSprite>,
     /// The palette the sprites were quantized against; also the scene's
     /// palette, so framebuffer indices match the loaded sprites.
     palette: Palette,
@@ -119,7 +129,10 @@ impl Playing {
     /// colors to it; `flipped` mirrors every frame horizontally first, so a
     /// right-facing animation can be reused for the opposite direction.
     fn load_sheet(palette: &mut Palette, name: &str, frames: usize, flipped: bool) -> SpriteSheet {
-        let data = crate::assets::load(name).expect("embedded sprite sheet must exist");
+        let data = crate::assets::load(name).expect(&format!(
+            "embedded sprite sheet must exist, error loading {}",
+            name
+        ));
         let sheet = SpriteSheet::from_png(data, palette, FRAME_W, FRAME_H, frames)
             .expect("embedded sprite sheet must load");
         if flipped {
@@ -136,10 +149,11 @@ impl Playing {
             .expect("sprite frames must encode to RLE")
     }
 
-    /// Build a gibbon's sheets from its standing sprite (gibbon.png) and the
-    /// shared walking animation (gibbon_move_right.png), flipped for the
-    /// left-facing frames. Player two recolors the same art green via
-    /// [`player2_color`] instead of loading a separate sheet.
+    /// Build a gibbon's sheets from its standing sprite (gibbon.png), the
+    /// hanging sprite (gibbon_hang.png) and the shared walking animation
+    /// (gibbon_move_right.png), flipped for the left-facing frames. Player two
+    /// recolors the same art green via [`player2_color`] instead of loading a
+    /// separate sheet.
     fn load_gibbon(palette: &mut Palette, recolor: Option<fn(Color) -> Color>) -> CharacterSheets {
         let mut decode = |name: &str, frames: usize, flip: bool| -> Vec<RleSprite> {
             let sheet = Self::load_sheet(palette, name, frames, flip);
@@ -157,6 +171,10 @@ impl Playing {
             walk_right: decode(WALK_SPRITE, WALK_FRAMES, false),
             walk_left: decode(WALK_SPRITE, WALK_FRAMES, true),
             climb: Vec::new(),
+            hang: decode(HANG_SPRITE, HANG_FRAMES, false),
+            hang_left: decode(HANG_SPRITE, HANG_FRAMES, true),
+            hang_walk_right: decode(HANG_WALK_SPRITE, HANG_WALK_FRAMES, false),
+            hang_walk_left: decode(HANG_WALK_SPRITE, HANG_WALK_FRAMES, true),
         }
     }
 
@@ -184,6 +202,10 @@ impl Playing {
             walk_right,
             walk_left,
             climb: Vec::new(),
+            hang: Vec::new(),
+            hang_left: Vec::new(),
+            hang_walk_right: Vec::new(),
+            hang_walk_left: Vec::new(),
         }
     }
 
@@ -206,6 +228,7 @@ impl Playing {
         let wood = Self::load_sprites(&mut palette, WOOD_SPRITE, WOOD_FRAMES);
         let ladder = Self::load_sprites(&mut palette, LADDER_SPRITE, LADDER_FRAMES);
         let stone = Self::load_sprites(&mut palette, STONE_SPRITE, STONE_FRAMES);
+        let railing = Self::load_sprites(&mut palette, RAILING_SPRITE, RAILING_FRAMES);
         // Render the theme once and start it looping; the WAV is kept so
         // playback can restart after a pause or when focus returns.
         let music = music_wav();
@@ -223,6 +246,7 @@ impl Playing {
             wood,
             ladder,
             stone,
+            railing,
             palette,
             music,
             sim_accumulator: 0.0,
@@ -398,6 +422,7 @@ impl Scene for Playing {
             wood: &self.wood,
             ladder: &self.ladder,
             stone: &self.stone,
+            railing: &self.railing,
         };
         game.draw(fb, game.frame_cnt, &sprites);
 

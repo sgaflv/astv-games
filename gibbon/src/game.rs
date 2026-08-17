@@ -56,9 +56,17 @@ pub const BOARD_Y: i32 = HUD_H;
 /// guard_move_right.png): the walking animation facing right. The left-facing
 /// frames are the same sprites flipped horizontally at load time.
 pub const WALK_FRAMES: usize = 6;
-/// Sprite frame count of the standing sheets (gibbon.png, guard.png): a
-/// single standing pose.
-pub const STAND_FRAMES: usize = 1;
+/// Sprite frame count of the standing sheets (gibbon.png, guard.png): three
+/// look poses — neutral, looking right, looking left — for the idle gaze
+/// animation.
+pub const STAND_FRAMES: usize = 3;
+/// Sprite frame count of the hanging sheet (gibbon_hang.png): the same three
+/// look poses for a gibbon hanging from a railing.
+pub const HANG_FRAMES: usize = 3;
+/// Sprite frame count of the hanging walk sheet (gibbon_hang_right.png): the
+/// hanging locomotion animation facing right. The left-facing frames are the
+/// same sprites flipped horizontally at load time.
+pub const HANG_WALK_FRAMES: usize = 2;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Action {
@@ -171,10 +179,10 @@ pub enum State {
 /// [`CharacterSheets`]. The left-facing frames are the right-facing art
 /// flipped horizontally, so a single walking sheet covers both directions.
 pub struct CharacterSprites<'a> {
-    /// Standing pose, facing right.
-    pub stand: &'a RleSprite,
-    /// Standing pose, facing left.
-    pub stand_left: &'a RleSprite,
+    /// Standing look poses: neutral (0), looking right (1), looking left (2).
+    pub stand: &'a [RleSprite],
+    /// Standing look poses, left-facing.
+    pub stand_left: &'a [RleSprite],
     /// Walking animation frames, facing right.
     pub walk_right: &'a [RleSprite],
     /// Walking animation frames, facing left.
@@ -182,6 +190,14 @@ pub struct CharacterSprites<'a> {
     /// Climbing pose; falls back to the standing pose when absent (the gibbon
     /// sheets hold no climbing art).
     pub climb: Option<&'a RleSprite>,
+    /// Hanging look poses: neutral (0), looking right (1), looking left (2).
+    pub hang: &'a [RleSprite],
+    /// Hanging look poses, left-facing.
+    pub hang_left: &'a [RleSprite],
+    /// Hanging walk animation frames, facing right.
+    pub hang_walk_right: &'a [RleSprite],
+    /// Hanging walk animation frames, facing left.
+    pub hang_walk_left: &'a [RleSprite],
 }
 
 /// The decoded sheets behind one character's animation. The gibbon's standing
@@ -189,9 +205,9 @@ pub struct CharacterSprites<'a> {
 /// gibbon_move_right.png (flipped for the left-facing frames); the guard
 /// still uses the old combined 5-frame sheet, split into the same poses here.
 pub struct CharacterSheets {
-    /// Standing pose, facing right.
+    /// Standing look poses, facing right.
     pub stand: Vec<RleSprite>,
-    /// Standing pose, facing left.
+    /// Standing look poses, facing left.
     pub stand_left: Vec<RleSprite>,
     /// Walking animation frames, facing right.
     pub walk_right: Vec<RleSprite>,
@@ -200,23 +216,29 @@ pub struct CharacterSheets {
     /// Climbing pose (empty for the gibbon sheets, so climbing falls back to
     /// the standing pose).
     pub climb: Vec<RleSprite>,
+    /// Hanging look poses, facing right.
+    pub hang: Vec<RleSprite>,
+    /// Hanging look poses, facing left.
+    pub hang_left: Vec<RleSprite>,
+    /// Hanging walk animation frames, facing right.
+    pub hang_walk_right: Vec<RleSprite>,
+    /// Hanging walk animation frames, facing left.
+    pub hang_walk_left: Vec<RleSprite>,
 }
 
 impl CharacterSheets {
     /// Borrow the sheets as a [`CharacterSprites`] view for drawing.
     pub fn sprites(&self) -> CharacterSprites<'_> {
         CharacterSprites {
-            stand: self
-                .stand
-                .first()
-                .expect("a standing frame is always loaded"),
-            stand_left: self
-                .stand_left
-                .first()
-                .expect("a standing frame is always loaded"),
+            stand: &self.stand,
+            stand_left: &self.stand_left,
             walk_right: &self.walk_right,
             walk_left: &self.walk_left,
             climb: self.climb.first(),
+            hang: &self.hang,
+            hang_left: &self.hang_left,
+            hang_walk_right: &self.hang_walk_right,
+            hang_walk_left: &self.hang_walk_left,
         }
     }
 }
@@ -241,6 +263,8 @@ pub struct GameSprites<'a> {
     /// Stone wall sheet: a single frame drawn for every unbreakable brick
     /// tile.
     pub stone: &'a [RleSprite],
+    /// Railing sheet: a single frame drawn for every railing tile.
+    pub railing: &'a [RleSprite],
 }
 
 /// The game owns the level, the gibbon, the guards, the dug holes and the
@@ -887,6 +911,14 @@ impl Game {
         }
     }
 
+    /// Whether the actor is hanging from a railing: the current cell has a
+    /// railing and there is no solid floor below it. When both a floor and a
+    /// railing are present the gibbon stands on the floor instead.
+    fn actor_is_hanging(&self, actor: Actor) -> bool {
+        self.tile(actor.x, actor.y) == Tile::Railing
+            && !self.tile(actor.x, actor.y + 1).is_solid()
+    }
+
     /// Apply one cell of gravity when the actor is unsupported. Returns
     /// whether the actor moved (fell). `tied` mirrors [`Game::supported`]: a
     /// tied gibbon falls through railings instead of hanging from them.
@@ -1016,11 +1048,11 @@ impl Game {
 
     /// Draw the tiles, the fruits, the guards and the gibbon.
     pub fn draw(&self, r: &mut impl Renderer, frame: usize, sprites: &GameSprites) {
-        self.draw_tiles(r, sprites.wood, sprites.ladder, sprites.stone);
+        self.draw_tiles(r, sprites.wood, sprites.ladder, sprites.stone, sprites.railing);
         self.draw_fruits(r, sprites.fruit);
 
         for guard in &self.guards {
-            self.draw_actor(r, *guard, frame, &sprites.guard);
+            self.draw_actor(r, *guard, frame, &sprites.guard, self.tick, false);
         }
 
         // Gibbons are drawn in every state: a tied gibbon stays wrapped in
@@ -1060,7 +1092,8 @@ impl Game {
                 tied_sprite.draw(r, px, py - BOARD_PY);
             }
         } else {
-            self.draw_actor(r, actor, frame, sprites);
+            let hanging = self.actor_is_hanging(actor);
+            self.draw_actor(r, actor, frame, sprites, self.tick, hanging);
         }
     }
 
@@ -1070,6 +1103,7 @@ impl Game {
         wood: &[RleSprite],
         ladder: &[RleSprite],
         stone: &[RleSprite],
+        railing: &[RleSprite],
     ) {
         for y in 0..GRID_Y {
             for x in 0..GRID_X {
@@ -1084,7 +1118,10 @@ impl Game {
                         Some(frame) => frame.draw(r, px, py),
                         None => draw_ladder(r, px, py),
                     },
-                    Tile::Railing => draw_railing(r, px, py),
+                    Tile::Railing => match railing.first() {
+                        Some(frame) => frame.draw(r, px, py),
+                        None => draw_railing(r, px, py),
+                    },
                     Tile::Empty | Tile::Fruit => {}
                 }
             }
@@ -1140,9 +1177,11 @@ impl Game {
         actor: Actor,
         frame: usize,
         sprites: &CharacterSprites,
+        tick: usize,
+        is_hanging: bool,
     ) {
         let (px, py) = interpolate(actor, frame);
-        let sprite = actor_sprite(actor, frame, sprites);
+        let sprite = actor_sprite(actor, frame, sprites, tick, is_hanging);
         sprite.draw(r, px, py);
         // Wrapping from the bottom row to the top: while the first copy
         // slides out past the bottom edge, draw it again at the top of
@@ -1155,38 +1194,77 @@ impl Game {
 
 /// The sprite to draw for `actor` at interpolation frame `frame`: the
 /// climbing pose during vertical movement, a walking-animation frame while
-/// walking horizontally, and the standing pose when resting.
+/// walking horizontally, and the standing (or hanging) pose when resting.
+/// The `tick` drives the idle gaze animation and `is_hanging` selects
+/// between the standing and hanging sprite sheets.
 fn actor_sprite<'a>(
     actor: Actor,
     frame: usize,
     sprites: &'a CharacterSprites<'a>,
+    tick: usize,
+    is_hanging: bool,
 ) -> &'a RleSprite {
     if actor.prev_y != actor.y {
         sprites
             .climb
-            .unwrap_or_else(|| facing_stand(actor, sprites))
+            .unwrap_or_else(|| idle_sprite(actor, sprites, 0, is_hanging))
     } else if actor.prev_x != actor.x {
-        let frames = if actor.facing < 0 {
+        let frames = if is_hanging {
+            if actor.facing < 0 {
+                sprites.hang_walk_left
+            } else {
+                sprites.hang_walk_right
+            }
+        } else if actor.facing < 0 {
             sprites.walk_left
         } else {
             sprites.walk_right
         };
         if frames.is_empty() {
-            facing_stand(actor, sprites)
+            idle_sprite(actor, sprites, 0, is_hanging)
         } else {
             &frames[walk_frame(frame, frames.len())]
         }
     } else {
-        facing_stand(actor, sprites)
+        idle_sprite(actor, sprites, tick, is_hanging)
     }
 }
 
-/// The standing pose for the actor's facing direction.
-fn facing_stand<'a>(actor: Actor, sprites: &'a CharacterSprites<'a>) -> &'a RleSprite {
-    if actor.facing < 0 {
-        sprites.stand_left
+/// The idle (standing or hanging) sprite for the actor's facing direction,
+/// with the look animation driven by `tick`. When `is_hanging` is true the
+/// hanging sprite sheet is used instead of the standing one.
+fn idle_sprite<'a>(
+    actor: Actor,
+    sprites: &'a CharacterSprites<'a>,
+    tick: usize,
+    is_hanging: bool,
+) -> &'a RleSprite {
+    let idx = look_frame(tick);
+    if is_hanging {
+        let frames = if actor.facing < 0 {
+            sprites.hang_left
+        } else {
+            sprites.hang
+        };
+        &frames[idx.min(frames.len().saturating_sub(1))]
     } else {
-        sprites.stand
+        let frames = if actor.facing < 0 {
+            sprites.stand_left
+        } else {
+            sprites.stand
+        };
+        &frames[idx.min(frames.len().saturating_sub(1))]
+    }
+}
+
+/// Look animation frame index: cycles through neutral (0), looking right (1),
+/// neutral (0), looking left (2), with each pose held for 5 game ticks.
+fn look_frame(tick: usize) -> usize {
+    match (tick / 5) % 4 {
+        0 => 0,
+        1 => 1,
+        2 => 0,
+        _ => 2,
     }
 }
 
@@ -2193,6 +2271,10 @@ mod tests {
             walk_right: decode(walk_name, WALK_FRAMES, false),
             walk_left: decode(walk_name, WALK_FRAMES, true),
             climb: Vec::new(),
+            hang: Vec::new(),
+            hang_left: Vec::new(),
+            hang_walk_right: Vec::new(),
+            hang_walk_left: Vec::new(),
         }
     }
 
@@ -2248,6 +2330,7 @@ mod tests {
                 wood,
                 ladder,
                 stone: &[],
+                railing: &[],
             },
         );
         fb
@@ -2349,6 +2432,7 @@ mod tests {
                 wood: &[],
                 ladder: &[],
                 stone: &stone,
+                railing: &[],
             },
         );
 
@@ -2389,6 +2473,7 @@ mod tests {
                 wood: &[],
                 ladder: &[],
                 stone: &[],
+                railing: &[],
             },
         );
 
@@ -2948,6 +3033,7 @@ mod tests {
                 wood: &[],
                 ladder: &[],
                 stone: &[],
+                railing: &[],
             },
         );
 
@@ -2985,6 +3071,7 @@ mod tests {
                 wood: &[],
                 ladder: &[],
                 stone: &[],
+                railing: &[],
             },
         );
 
