@@ -1070,17 +1070,38 @@ impl Game {
 
     /// Draw the tiles, the fruits, the guards and the gibbon.
     pub fn draw(&self, r: &mut impl Renderer, frame: usize, sprites: &GameSprites) {
-        self.draw_tiles(r, sprites.wood, sprites.ladder, sprites.stone, sprites.railing);
+        self.draw_tiles(
+            r,
+            sprites.wood,
+            sprites.ladder,
+            sprites.stone,
+            sprites.railing,
+        );
         self.draw_fruits(r, sprites.fruit);
 
         for guard in &self.guards {
-            self.draw_actor(r, *guard, frame, &sprites.guard, self.tick, self.actor_is_hanging(*guard), self.actor_is_climbing(*guard));
+            self.draw_actor(
+                r,
+                *guard,
+                frame,
+                &sprites.guard,
+                self.tick,
+                self.actor_is_hanging(*guard),
+                self.actor_is_climbing(*guard),
+            );
         }
 
         // Gibbons are drawn in every state: a tied gibbon stays wrapped in
         // rope on screen while a lost life is paused, and when the game is
         // over both tied gibbons remain visible.
-        self.draw_gibbon(r, self.gibbon, self.tied[0], frame, &sprites.gibbon, sprites.tied);
+        self.draw_gibbon(
+            r,
+            self.gibbon,
+            self.tied[0],
+            frame,
+            &sprites.gibbon,
+            sprites.tied,
+        );
         if self.players == 2 {
             self.draw_gibbon(
                 r,
