@@ -96,6 +96,8 @@ impl Input {
             Enter => Input::Confirm,
             Escape | Back => Input::Back,
             Space | Menu => Input::Pause,
+            X => Input::GameA,
+            Z => Input::GameB,
             F1 => Input::GameA,
             F2 => Input::GameB,
             F3 => Input::GameX,
@@ -380,7 +382,7 @@ mod tests {
     #[test]
     fn player_key_sets_are_routed_to_separate_players() {
         use KeyCode::*;
-        let player_0 = [Up, Down, Left, Right, W, A, S, D, F1, F2, F3, F4];
+        let player_0 = [Up, Down, Left, Right, W, A, S, D, Z, X, F1, F2, F3, F4];
         let player_1 = [I, K, J, L, F5, F6, F7, F8];
         for key in player_0 {
             assert_eq!(

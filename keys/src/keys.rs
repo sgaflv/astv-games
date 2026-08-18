@@ -176,7 +176,7 @@ impl Scene for Keys {
             );
         }
 
-        fb.draw_text(16, LEGEND_Y[0], 1, GRAY, "P1: ARROWS / WASD / F1-F4");
+        fb.draw_text(16, LEGEND_Y[0], 1, GRAY, "P1: ARROWS / WASD / Z X / F1-F4");
         fb.draw_text(16, LEGEND_Y[1], 1, GRAY, "P2: IJKL / F5-F8");
         fb.draw_text(
             16,

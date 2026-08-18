@@ -3,7 +3,7 @@
 //! clear / game over overlays.
 
 use crate::game::{
-    Action, CharacterSheets, Game, GameSprites, CLIMB_FRAMES, HANG_FRAMES, HANG_WALK_FRAMES,
+    Action, CLIMB_FRAMES, CharacterSheets, Game, GameSprites, HANG_FRAMES, HANG_WALK_FRAMES,
     STAND_FRAMES, State, TARGET_FRAMES, WALK_FRAMES,
 };
 use crate::palette::{self, BG, HUD, PLAYER2_BODY, PLAYER2_DARK, PLAYER2_FACE};
@@ -21,12 +21,11 @@ const FRAME_TIME: f64 = 1.0 / TARGET_FRAMES as f64;
 /// Never run more than this many simulation steps per frame.
 const MAX_SIM_STEPS: usize = 8;
 
-// The fruit sprite sheet: 12 frames of 24x24 (one board cell) laid out
-// horizontally in this crate's assets/apple_rotate.png.
-const FRUIT_SPRITE: &str = "apple_rotate.png";
 const FRAME_W: usize = 24;
 const FRAME_H: usize = 24;
-const FRUIT_FRAMES: usize = 12;
+
+const FRUIT_SPRITE: &str = "fruit.png";
+const FRUIT_FRAMES: usize = 1;
 
 // The gibbon's art is split across three sheets: gibbon.png holds the
 // standing look poses (neutral, looking right, looking left),
@@ -474,6 +473,10 @@ impl Scene for Playing {
 
     fn clear_color(&self) -> engine::color::Color {
         BG
+    }
+
+    fn show_hud(&self) -> bool {
+        false
     }
 
     fn suspend(&mut self) {

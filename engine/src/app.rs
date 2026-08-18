@@ -182,7 +182,9 @@ impl Stage {
 
         self.framebuffer.zero();
         self.scene.draw(&mut self.framebuffer);
-        self.draw_hud();
+        if self.scene.show_hud() {
+            self.draw_hud();
+        }
 
         // End time measure.
         let t1 = miniquad::date::now();

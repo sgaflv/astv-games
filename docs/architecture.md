@@ -58,7 +58,6 @@ them.
 | `gibbon/build.rs`             | Embeds `gibbon/assets/` via `engine/build_assets.rs`        |
 | `gibbon/src/lib.rs`           | Module wiring (`assets`, `game`, `level`, `palette`, `play`) |
 | `gibbon/src/assets.rs`        | `gibbon` asset registry: look up embedded assets by file name |
-| `gibbon/assets/apple_rotate.png` | Gibbon's bundled fruit sprite sheet (12 frames)          |
 | `gibbon/assets/gibbon.png`    | Gibbon character sheet (5 frames: right0, right1, left0, left1, climb) |
 | `gibbon/assets/guard.png`     | Guard character sheet (same 5-frame layout)                 |
 | `gibbon/assets/levels/lvlN.txt` | Text levels parsed into 20x11 grids (`@` fruit, `s` gibbon spawn, `g` guard spawn, `|` ladder, `-` railing, `#` wood, `*` brick) |

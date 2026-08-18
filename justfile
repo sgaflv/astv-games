@@ -40,10 +40,6 @@ check-android:
 
 # Build signed debug apk (cargo ndk + javac/d8 + aapt2/zipalign/apksigner)
 apk:
-    ./scripts/build-apk.sh
-
-# Build signed release apk
-apk-release:
     PROFILE=release ./scripts/build-apk.sh
 
 # Build apk for arm64-v8a

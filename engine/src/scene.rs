@@ -74,6 +74,12 @@ pub trait Scene {
         Color::BLACK
     }
 
+    /// Whether the engine's diagnostic HUD (FPS, render time, …) should be
+    /// drawn over this scene. Defaults to `true`.
+    fn show_hud(&self) -> bool {
+        true
+    }
+
     /// The window was minimized / the app was backgrounded: pause anything
     /// that should not advance while hidden.
     fn suspend(&mut self) {}
