@@ -125,13 +125,5 @@ impl Scene for GameSelect {
             }
             fb.draw_text(x, y, OPTION_SCALE, color, label);
         }
-
-        fb.draw_text(
-            (w - font::text_width("X = NEXT   Y = OK", 1)) / 2,
-            OPTION_Y + GameKind::ALL.len() as i32 * OPTION_LINE + 10,
-            1,
-            DIM_COLOR,
-            "X = NEXT   Y = OK",
-        );
     }
 }
