@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
-    package="rust.snake"
+    package="astv.games"
     android:versionCode="1"
     android:versionName="0.1.0">
 
@@ -17,7 +17,7 @@
         android:debuggable="true">
 
         <activity
-            android:name="rust.snake.MainActivity"
+            android:name="astv.games.MainActivity"
             android:exported="true"
             android:configChanges="orientation|keyboardHidden|screenSize|screenLayout|uiMode|smallestScreenSize">
             <intent-filter>

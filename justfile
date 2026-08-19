@@ -60,11 +60,14 @@ connect:
 install:
     adb install -r -d target/apk/app.apk
 
+uninstall:
+    adb uninstall astv.games
+
 tv-run:
-    adb shell monkey -p rust.snake 1
+    adb shell monkey -p astv.games 1
 
 tv-stop:
-    adb shell am force-stop rust.snake
+    adb shell am force-stop astv.games
 
 tv-cancel:
     adb shell input keyevent KEYCODE_HOME
@@ -84,6 +87,12 @@ tv-mute:
 tv-volume:
 	adb shell cmd media_session volume --stream 3 --set 10    
     
+tv-wifi-off:
+    adb shell svc wifi disable
+
+tv-wifi-on:
+    adb shell svc wifi enable
+
 log:
     adb logcat
 

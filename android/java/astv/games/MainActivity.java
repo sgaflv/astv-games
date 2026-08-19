@@ -1,4 +1,4 @@
-package rust.snake;
+package astv.games;
 
 import javax.microedition.khronos.egl.EGLConfig;
 import javax.microedition.khronos.opengles.GL10;

@@ -275,7 +275,7 @@ The `gibbon` package is a single-player Lode Runner-style game: run and climb a
   `quad_native.QuadNative` JNI calls, and the Rust entry point is the exported
   `quad_main` symbol (`app/src/lib.rs`). The Java glue loads the native
   library as `"app"` (`libapp.so`), built from the `app` crate.
-* `AndroidManifest.xml` declares `rust.snake.MainActivity`, targets API 30
+* `AndroidManifest.xml` declares `astv.games.MainActivity`, targets API 30
   (min 26), and registers both `LAUNCHER` and `LEANBACK_LAUNCHER` intents.
 * `scripts/build-apk.sh` cross-compiles `libapp.so` with cargo-ndk, compiles
   the Java glue with `javac` (against the newest platform `android.jar`),
